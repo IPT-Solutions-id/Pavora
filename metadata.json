@@ -1,0 +1,6 @@
+{
+  "name": "PEVORA — People Empowered Workforce",
+  "description": "Platform HRIS terpadu untuk Master Admin, Admin, Rekruter, dan Karyawan. Developed by PT Iskandar Pratama Teknologi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
