@@ -12,8 +12,12 @@ import './index.css';
 
 const origConsoleError = console.error;
 console.error = (...args: unknown[]) => {
-  origConsoleError.apply(console, args);
   const msg = args.map((a) => String(a)).join(' ');
+  if (msg.includes('INFO: Created TensorFlow Lite XNNPACK delegate')) {
+    console.info(...args);
+    return;
+  }
+  origConsoleError.apply(console, args);
   if (msg.includes('OverQuotaMapError') || msg.includes('QuotaExceededError')) {
     window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
   }

@@ -30,6 +30,11 @@ import {
   validateEmployeeInput,
 } from '../../data/masterAdminData';
 import { isValidMapsUrl } from '../../utils/mapsUrl';
+import {
+  resolveEmployeeContractSequenceLabel,
+  resolveLatestContractSignatureStatus,
+} from '../../utils/pkwtLifecycle';
+import { BpjsCardsSection } from '../shared/BpjsCardsSection';
 
 interface EmployeeModalProps {
   mode: 'view' | 'create' | 'edit';
@@ -517,9 +522,11 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-[#64748B]">Jenis &amp; Nomor Kontrak</dt>
+                  <dt className="text-[#64748B]">Jenis, Tahap &amp; Nomor Kontrak</dt>
                   <dd className="font-semibold text-[#172033] mt-0.5 tabular-nums">
-                    {employee.contractType} · {employee.contractNumber || 'Belum bernomor'}
+                    {resolveEmployeeContractSequenceLabel(employee)} ·{' '}
+                    {employee.contractNumber || 'Belum bernomor'} (
+                    {resolveLatestContractSignatureStatus(employee)})
                   </dd>
                 </div>
                 <div>
@@ -642,7 +649,29 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                       : employee.domicileAddress || '—'}
                   </dd>
                 </div>
+                {employee.savedSignatureDataUrl && (
+                  <div className="sm:col-span-2 lg:col-span-3 pt-2 border-t border-[#E2E8F0]">
+                    <dt className="text-[#64748B]">
+                      Spesimen TTD Digital Tersimpan (Menu TTD Karyawan
+                      {employee.savedSignatureUpdatedAt ? ` · ${employee.savedSignatureUpdatedAt}` : ''})
+                    </dt>
+                    <dd className="mt-1.5">
+                      <img
+                        src={employee.savedSignatureDataUrl}
+                        alt={`Spesimen TTD ${employee.fullName}`}
+                        className="h-14 w-36 object-contain bg-[#F8FAFC] border border-[#E2E8F0] rounded-[4px] p-1"
+                      />
+                    </dd>
+                  </div>
+                )}
               </dl>
+
+              <div className="mt-4 pt-4 border-t border-[#E2E8F0] space-y-2.5">
+                <p className="text-xs font-bold text-[#102B69]">
+                  Kartu Kepesertaan BPJS Kesehatan &amp; BPJS Ketenagakerjaan
+                </p>
+                <BpjsCardsSection employee={employee} editable={false} />
+              </div>
             </section>
 
             {/* Section 03: Kartu Keluarga & Kontak Darurat */}

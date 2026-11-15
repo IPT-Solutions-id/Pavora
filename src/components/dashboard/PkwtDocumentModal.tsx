@@ -1,6 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Download, FileText, Printer, RotateCcw, X } from 'lucide-react';
-import { ContractRecord, EmployeeRecord } from '../../data/masterAdminData';
+import {
+  CheckCircle2,
+  Download,
+  FileText,
+  Lock,
+  PenTool,
+  Printer,
+  RotateCcw,
+  X,
+} from 'lucide-react';
+import {
+  ContractRecord,
+  EmployeeRecord,
+  SystemSettingsConfig,
+} from '../../data/masterAdminData';
 import {
   PASAL_2_ITEMS,
   PASAL_3_PAGE1_ITEMS,
@@ -32,10 +45,24 @@ import {
   createPkwtPdfBlob,
   downloadPkwtPdf,
 } from '../../utils/pkwtPdfGenerator';
+import {
+  isContractSignedLocked,
+  isPkwtModalReadOnly,
+} from '../../utils/pkwtLifecycle';
+import { DigitalSignaturePad } from '../shared/DigitalSignaturePad';
 
 interface PkwtDocumentModalProps {
   contract: ContractRecord;
   employee?: EmployeeRecord;
+  settings?: Pick<
+    SystemSettingsConfig,
+    'companyName' | 'pkwtSignatoryName' | 'pkwtSignatoryTitle'
+  >;
+  readOnly?: boolean;
+  canSignNow?: boolean;
+  savedSignatureDataUrl?: string;
+  onSignContract?: (signatureDataUrl: string) => { ok: boolean; message: string } | void;
+  onGoToSignatureMenu?: () => void;
   onClose: () => void;
 }
 
@@ -153,10 +180,16 @@ const A4SheetChrome: React.FC<A4SheetChromeProps> = ({ pageNumber, children }) =
 export const PkwtDocumentModal: React.FC<PkwtDocumentModalProps> = ({
   contract,
   employee,
+  settings,
+  readOnly = false,
+  canSignNow = false,
+  savedSignatureDataUrl,
+  onSignContract,
+  onGoToSignatureMenu,
   onClose,
 }) => {
   const [payload, setPayload] = useState<PkwtDocumentPayload>(() =>
-    buildDefaultPkwtPayload(contract, employee)
+    buildDefaultPkwtPayload(contract, employee, settings)
   );
   const [readyBlobUrl, setReadyBlobUrl] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -164,6 +197,38 @@ export const PkwtDocumentModal: React.FC<PkwtDocumentModalProps> = ({
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+  const [modalSigMode, setModalSigMode] = useState<'saved' | 'draw'>(() =>
+    savedSignatureDataUrl ? 'saved' : 'draw'
+  );
+  const [modalDrawnSig, setModalDrawnSig] = useState('');
+  const [modalConsent, setModalConsent] = useState(false);
+
+  const matchingHistory =
+    employee?.contractHistory?.find((h) => h.contractNumber === contract.contractNumber) ??
+    employee?.contractHistory?.[employee.contractHistory.length - 1];
+
+  const isSignedLocked =
+    isContractSignedLocked(matchingHistory?.signatureStatus) ||
+    Boolean(payload.employeeSignatureDataUrl);
+
+  const effectiveReadOnly = isPkwtModalReadOnly({
+    viewerRole: readOnly ? 'employee' : 'admin',
+    signatureStatus: isSignedLocked ? 'Sudah TTD Digital' : matchingHistory?.signatureStatus,
+  });
+
+  useEffect(() => {
+    setPayload(buildDefaultPkwtPayload(contract, employee, settings));
+  }, [
+    contract.contractNumber,
+    contract.startDate,
+    contract.endDate,
+    employee?.id,
+    matchingHistory?.employeeSignatureDataUrl,
+    matchingHistory?.signatureStatus,
+    settings?.companyName,
+    settings?.pkwtSignatoryName,
+    settings?.pkwtSignatoryTitle,
+  ]);
 
   const downloadFilename = useMemo(() => buildPkwtDownloadFilename(payload), [payload]);
 
@@ -264,22 +329,26 @@ export const PkwtDocumentModal: React.FC<PkwtDocumentModalProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setPayload(buildDefaultPkwtPayload(contract, employee))}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#102B69] bg-white hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Reset Data Karyawan</span>
-            </button>
+            {!effectiveReadOnly && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setPayload(buildDefaultPkwtPayload(contract, employee, settings))}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#102B69] bg-white hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Reset Data Karyawan</span>
+                </button>
 
-            <button
-              type="button"
-              onClick={() => setPayload(buildReferenceSamplePkwtPayload())}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#1468E8] bg-white hover:bg-[#EAF2FF] border border-[#1468E8]/30 rounded-[4px] cursor-pointer"
-            >
-              <span>Preset Referensi PDF</span>
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setPayload(buildReferenceSamplePkwtPayload())}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#1468E8] bg-white hover:bg-[#EAF2FF] border border-[#1468E8]/30 rounded-[4px] cursor-pointer"
+                >
+                  <span>Preset Referensi PDF</span>
+                </button>
+              </>
+            )}
 
             <button
               type="button"
@@ -331,18 +400,192 @@ export const PkwtDocumentModal: React.FC<PkwtDocumentModalProps> = ({
           </div>
         )}
 
-        {/* Split Body: Left Editable Fields | Right Live 4-Page A4 Preview */}
+        {/* Split Body: Left Panel (Read-Only Lock / Sign / Editable Fields) | Right Live 4-Page A4 Preview */}
         <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden print:block print:overflow-visible">
-          {/* Left Panel: Editable Dynamic Fields */}
-          <aside className="w-full lg:w-[360px] shrink-0 border-b lg:border-b-0 lg:border-r border-[#E2E8F0] bg-white overflow-y-auto p-4 space-y-4 max-h-[38vh] lg:max-h-none print:hidden">
-            <div>
-              <h3 className="text-xs font-bold text-[#102B69] pb-1.5 border-b border-[#E2E8F0]">
-                Data Dinamis Surat &amp; Identitas (Hal. 1, 3, 4)
-              </h3>
-              <p className="text-[11px] text-[#64748B] mt-1">
-                Perubahan langsung memperbarui pratinjau 4 halaman dan hasil file PDF yang diunduh.
-              </p>
-            </div>
+          {effectiveReadOnly ? (
+            <aside
+              data-testid="pkwt-readonly-sidebar"
+              className="w-full lg:w-[360px] shrink-0 border-b lg:border-b-0 lg:border-r border-[#E2E8F0] bg-white overflow-y-auto p-4 space-y-4 max-h-[42vh] lg:max-h-none print:hidden"
+            >
+              <div className="p-3.5 rounded-[6px] border border-[#E2E8F0] bg-[#F5F7FA] space-y-1.5">
+                <p className="inline-flex items-center gap-1.5 text-xs font-bold text-[#102B69]">
+                  <Lock className="w-3.5 h-3.5 text-[#1468E8]" aria-hidden="true" />
+                  <span>
+                    {isSignedLocked
+                      ? 'Arsip PKWT Terkunci Permanen'
+                      : 'Mode Baca Dokumen Resmi PKWT'}
+                  </span>
+                </p>
+                <p className="text-[11px] text-[#64748B] leading-relaxed">
+                  {isSignedLocked
+                    ? 'Dokumen ini telah selesai ditandatangani secara resmi sehingga isi surat & tanda tangan terkunci permanen (hanya dapat dilihat dan diunduh PDF-nya, tidak dapat diedit).'
+                    : 'Isi perjanjian kerja diterbitkan oleh HR / Super Admin dan tidak dapat diubah oleh karyawan. Silakan baca seluruh pasal (Hal. 1–4) sebelum menyetujui & menandatangani.'}
+                </p>
+              </div>
+
+              <dl className="space-y-2 text-xs border border-[#E2E8F0] rounded-[6px] p-3.5 bg-white">
+                <div>
+                  <dt className="text-[#64748B]">Nomor Kontrak</dt>
+                  <dd className="font-mono font-bold text-[#102B69] mt-0.5">{payload.pkwtNumber}</dd>
+                </div>
+                <div>
+                  <dt className="text-[#64748B]">Periode Berlaku</dt>
+                  <dd className="font-semibold text-[#172033] mt-0.5 tabular-nums">
+                    {payload.startDateText} s/d {payload.endDateText}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#64748B]">Penempatan &amp; Jabatan</dt>
+                  <dd className="font-semibold text-[#172033] mt-0.5">
+                    {payload.position} · {payload.placementShort}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#64748B]">Status Tanda Tangan</dt>
+                  <dd
+                    className={`font-bold mt-0.5 ${
+                      isSignedLocked ? 'text-[#16A36A]' : 'text-[#B87D00]'
+                    }`}
+                  >
+                    {isSignedLocked
+                      ? `Sudah TTD Digital${payload.employeeSignedDateText ? ` (${payload.employeeSignedDateText})` : ''}`
+                      : 'Menunggu TTD Karyawan'}
+                  </dd>
+                </div>
+              </dl>
+
+              {canSignNow && !isSignedLocked && onSignContract && (
+                <div className="p-4 border border-[#1468E8]/35 bg-[#F8FAFC] rounded-[6px] space-y-3 text-xs">
+                  <h3 className="font-bold text-[#102B69] flex items-center gap-1.5">
+                    <PenTool className="w-3.5 h-3.5 text-[#1468E8]" aria-hidden="true" />
+                    <span>Bubuhkan Tanda Tangan PKWT</span>
+                  </h3>
+
+                  {savedSignatureDataUrl && (
+                    <div className="inline-flex p-1 bg-white border border-[#E2E8F0] rounded-[4px] w-full">
+                      <button
+                        type="button"
+                        onClick={() => setModalSigMode('saved')}
+                        className={`flex-1 px-2 py-1 text-[11px] font-semibold rounded-[3px] cursor-pointer ${
+                          modalSigMode === 'saved'
+                            ? 'bg-[#1468E8] text-white'
+                            : 'text-[#64748B] hover:text-[#102B69]'
+                        }`}
+                      >
+                        Pakai TTD Tersimpan
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setModalSigMode('draw')}
+                        className={`flex-1 px-2 py-1 text-[11px] font-semibold rounded-[3px] cursor-pointer ${
+                          modalSigMode === 'draw'
+                            ? 'bg-[#1468E8] text-white'
+                            : 'text-[#64748B] hover:text-[#102B69]'
+                        }`}
+                      >
+                        Gores Ulang
+                      </button>
+                    </div>
+                  )}
+
+                  {modalSigMode === 'saved' && savedSignatureDataUrl ? (
+                    <div className="p-3 bg-white border border-[#E2E8F0] rounded-[4px] space-y-1.5">
+                      <p className="text-[11px] text-[#64748B] font-semibold">
+                        Spesimen TTD Tersimpan (dari Menu TTD):
+                      </p>
+                      <img
+                        src={savedSignatureDataUrl}
+                        alt={`TTD tersimpan ${payload.employeeName}`}
+                        className="h-20 w-full object-contain bg-[#F8FAFC] border border-[#E2E8F0] rounded-[4px] p-1"
+                      />
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <DigitalSignaturePad
+                        value={modalDrawnSig}
+                        onChange={setModalDrawnSig}
+                        signerLabel={payload.employeeName}
+                      />
+                      {onGoToSignatureMenu && !savedSignatureDataUrl && (
+                        <button
+                          type="button"
+                          onClick={onGoToSignatureMenu}
+                          className="text-[11px] font-semibold text-[#1468E8] hover:underline cursor-pointer"
+                        >
+                          Atau atur TTD permanen lewat Menu TTD →
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  <label className="inline-flex items-start gap-2 text-[#172033] font-medium cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={modalConsent}
+                      onChange={(e) => setModalConsent(e.target.checked)}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      Saya sudah membaca seluruh pasal PKWT (Hal. 1–4) dan menyetujui perjanjian kerja ini.
+                    </span>
+                  </label>
+
+                  <button
+                    type="button"
+                    data-testid="pkwt-modal-sign-submit"
+                    onClick={() => {
+                      const activeSig =
+                        modalSigMode === 'saved' && savedSignatureDataUrl
+                          ? savedSignatureDataUrl
+                          : modalDrawnSig;
+                      if (!activeSig) {
+                        setStatusMessage({
+                          type: 'error',
+                          text: 'Siapkan TTD terlebih dahulu (pilih TTD tersimpan atau goreskan pada kanvas).',
+                        });
+                        return;
+                      }
+                      if (!modalConsent) {
+                        setStatusMessage({
+                          type: 'error',
+                          text: 'Centang pernyataan persetujuan isi PKWT terlebih dahulu.',
+                        });
+                        return;
+                      }
+                      const res = onSignContract(activeSig);
+                      if (!res || res.ok) {
+                        setPayload((prev) => ({
+                          ...prev,
+                          employeeSignatureDataUrl: activeSig,
+                        }));
+                        setStatusMessage({
+                          type: 'success',
+                          text:
+                            res?.message ??
+                            'PKWT berhasil ditandatangani, tersimpan permanen & terkunci (read-only).',
+                        });
+                      } else {
+                        setStatusMessage({ type: 'error', text: res.message });
+                      }
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold text-white bg-[#16A36A] hover:bg-[#102B69] rounded-[4px] cursor-pointer transition-colors"
+                  >
+                    <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                    <span>Setujui &amp; Tandatangani PKWT</span>
+                  </button>
+                </div>
+              )}
+            </aside>
+          ) : (
+            <aside className="w-full lg:w-[360px] shrink-0 border-b lg:border-b-0 lg:border-r border-[#E2E8F0] bg-white overflow-y-auto p-4 space-y-4 max-h-[38vh] lg:max-h-none print:hidden">
+              <div>
+                <h3 className="text-xs font-bold text-[#102B69] pb-1.5 border-b border-[#E2E8F0]">
+                  Data Dinamis Surat &amp; Identitas (Hal. 1, 3, 4)
+                </h3>
+                <p className="text-[11px] text-[#64748B] mt-1">
+                  Perubahan langsung memperbarui pratinjau 4 halaman dan hasil file PDF yang diunduh.
+                </p>
+              </div>
 
             <div className="space-y-3 text-xs">
               <div>
@@ -613,7 +856,8 @@ export const PkwtDocumentModal: React.FC<PkwtDocumentModalProps> = ({
                 />
               </div>
             </div>
-          </aside>
+            </aside>
+          )}
 
           {/* Right Panel: Exact 4-Page A4 Document Preview */}
           <div

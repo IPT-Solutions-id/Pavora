@@ -7,8 +7,13 @@ import {
   EmployeeRecord,
   EntityRecord,
   OnboardingCandidateRecord,
+  SystemSettingsConfig,
   formatIndonesianDate,
 } from '../../data/masterAdminData';
+import {
+  resolveEmployeeContractSequenceLabel,
+  resolveLatestContractSignatureStatus,
+} from '../../utils/pkwtLifecycle';
 import { EmployeeModal } from '../dashboard/EmployeeModal';
 import { PkwtDocumentModal } from '../dashboard/PkwtDocumentModal';
 
@@ -19,6 +24,7 @@ interface AdminOnboardingPkwtPanelProps {
   entities: EntityRecord[];
   departments: DepartmentRecord[];
   assignedScopes: string[];
+  settings?: SystemSettingsConfig;
   onSubmitCandidateOnboarding: (candidateId: string, employeeData: EmployeeFormInput) => void;
   onProposePkwtExtension: (contractId: string) => void;
   onInspectEmployee: (employeeCode: string) => void;
@@ -31,6 +37,7 @@ export const AdminOnboardingPkwtPanel: React.FC<AdminOnboardingPkwtPanelProps> =
   entities,
   departments,
   assignedScopes,
+  settings,
   onSubmitCandidateOnboarding,
   onProposePkwtExtension,
   onInspectEmployee,
@@ -257,76 +264,98 @@ export const AdminOnboardingPkwtPanel: React.FC<AdminOnboardingPkwtPanelProps> =
                   </td>
                 </tr>
               ) : (
-                visibleContracts.map((c) => (
-                  <tr key={c.id} className="hover:bg-[#F5F7FA]/60 transition-colors">
-                    <td className="py-3.5 px-6">
-                      <button
-                        type="button"
-                        onClick={() => onInspectEmployee(c.employeeCode)}
-                        className="font-semibold text-[#172033] hover:text-[#1468E8] hover:underline underline-offset-2 text-left cursor-pointer"
-                      >
-                        {c.employeeName}
-                      </button>
-                      <p className="text-xs text-[#64748B] tabular-nums">
-                        {c.contractNumber} ({c.contractType})
-                      </p>
-                    </td>
-                    <td className="py-3.5 px-4 text-xs font-medium text-[#102B69]">
-                      {c.entityName}
-                    </td>
-                    <td className="py-3.5 px-4 text-xs text-[#172033] tabular-nums whitespace-nowrap">
-                      {c.startDate} – {c.endDate}
-                    </td>
-                    <td className="py-3.5 px-4 text-xs font-semibold text-[#102B69] tabular-nums whitespace-nowrap">
-                      {c.daysRemaining === null ? 'Tetap' : `${c.daysRemaining} hari`}
-                    </td>
-                    <td className="py-3.5 px-4 whitespace-nowrap">
-                      <span
-                        className={`text-xs font-bold ${
-                          c.status === 'Segera Berakhir'
-                            ? 'text-[#B87D00]'
-                            : c.status === 'Diperpanjang'
-                              ? 'text-[#1468E8]'
-                              : 'text-[#16A36A]'
-                        }`}
-                      >
-                        {c.status}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-6 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center justify-end gap-2">
-                        {c.contractType === 'PKWT' && (
-                          <button
-                            type="button"
-                            onClick={() => setActivePkwtContract(c)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-[#102B69] bg-white hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
+                visibleContracts.map((c) => {
+                  const matchedEmp = employees.find(
+                    (e) => e.employeeCode.toLowerCase() === c.employeeCode.toLowerCase()
+                  );
+                  const seqLabel = matchedEmp
+                    ? resolveEmployeeContractSequenceLabel(matchedEmp)
+                    : c.contractType;
+                  const ttdStatus = matchedEmp
+                    ? resolveLatestContractSignatureStatus(matchedEmp)
+                    : null;
+                  return (
+                    <tr key={c.id} className="hover:bg-[#F5F7FA]/60 transition-colors">
+                      <td className="py-3.5 px-6">
+                        <button
+                          type="button"
+                          onClick={() => onInspectEmployee(c.employeeCode)}
+                          className="font-semibold text-[#172033] hover:text-[#1468E8] hover:underline underline-offset-2 text-left cursor-pointer"
+                        >
+                          {c.employeeName}
+                        </button>
+                        <p className="text-xs text-[#64748B] tabular-nums">
+                          {c.contractNumber} ({seqLabel})
+                        </p>
+                      </td>
+                      <td className="py-3.5 px-4 text-xs font-medium text-[#102B69]">
+                        {c.entityName}
+                      </td>
+                      <td className="py-3.5 px-4 text-xs text-[#172033] tabular-nums whitespace-nowrap">
+                        {c.startDate} – {c.endDate}
+                      </td>
+                      <td className="py-3.5 px-4 text-xs font-semibold text-[#102B69] tabular-nums whitespace-nowrap">
+                        {c.daysRemaining === null ? 'Tetap' : `${c.daysRemaining} hari`}
+                      </td>
+                      <td className="py-3.5 px-4 whitespace-nowrap space-y-0.5">
+                        <p
+                          className={`text-xs font-bold ${
+                            c.status === 'Segera Berakhir'
+                              ? 'text-[#B87D00]'
+                              : c.status === 'Diperpanjang'
+                                ? 'text-[#1468E8]'
+                                : 'text-[#16A36A]'
+                          }`}
+                        >
+                          {c.status}
+                        </p>
+                        {ttdStatus && c.contractType === 'PKWT' && (
+                          <p
+                            className={`text-[11px] font-semibold ${
+                              ttdStatus === 'Menunggu TTD Karyawan'
+                                ? 'text-[#B87D00]'
+                                : 'text-[#16A36A]'
+                            }`}
                           >
-                            <FileText className="w-3.5 h-3.5" aria-hidden="true" />
-                            <span>Cetak PKWT</span>
-                          </button>
+                            {ttdStatus}
+                          </p>
                         )}
-                        {c.contractType === 'PKWT' && c.status !== 'Diperpanjang' ? (
-                          c.extensionRequested ? (
-                            <span className="text-xs font-semibold text-[#B87D00]">
-                              Usulan Dikirim ke Master Admin
-                            </span>
-                          ) : (
+                      </td>
+                      <td className="py-3.5 px-6 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center justify-end gap-2">
+                          {c.contractType === 'PKWT' && (
                             <button
                               type="button"
-                              onClick={() => onProposePkwtExtension(c.id)}
-                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-[#102B69] bg-[#F5F7FA] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
+                              onClick={() => setActivePkwtContract(c)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-[#102B69] bg-white hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
                             >
-                              <span>Ajukan Perpanjangan PKWT</span>
-                              <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                              <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>Lihat / Cetak PKWT</span>
                             </button>
-                          )
-                        ) : c.contractType !== 'PKWT' ? (
-                          <span className="text-xs text-[#64748B]">—</span>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                          )}
+                          {c.contractType === 'PKWT' && c.status !== 'Diperpanjang' ? (
+                            c.extensionRequested ? (
+                              <span className="text-xs font-semibold text-[#B87D00]">
+                                Usulan Dikirim ke Master Admin
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => onProposePkwtExtension(c.id)}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-[#102B69] bg-[#F5F7FA] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
+                              >
+                                <span>Ajukan Perpanjangan PKWT</span>
+                                <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                              </button>
+                            )
+                          ) : c.contractType !== 'PKWT' ? (
+                            <span className="text-xs text-[#64748B]">—</span>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -354,6 +383,7 @@ export const AdminOnboardingPkwtPanel: React.FC<AdminOnboardingPkwtPanelProps> =
         <PkwtDocumentModal
           contract={activePkwtContract}
           employee={employees.find((e) => e.employeeCode === activePkwtContract.employeeCode)}
+          settings={settings}
           onClose={() => setActivePkwtContract(null)}
         />
       )}

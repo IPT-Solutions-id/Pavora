@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ApprovalRequestRecord,
   AttendanceLocationRecord,
@@ -32,6 +32,7 @@ import {
   UserRoleName,
   WorkPolicyConfig,
   WorkspaceNotificationRecord,
+  buildLiveOperationalSnapshots,
   buildSkdCertificatePreviewDataUrl,
   calculateDaysRemaining,
   calculateEmployeeLeaveQuotaSummary,
@@ -47,6 +48,10 @@ import {
   validateLeaveRequestSubmission,
 } from '../data/masterAdminData';
 import { FACE_MATCH_THRESHOLD_PERCENT } from '../utils/faceVerification';
+import {
+  buildExtendedPkwtContractDraft,
+  isContractSignedLocked,
+} from '../utils/pkwtLifecycle';
 import {
   ApplicantProfileRecord,
   ApplicationStage,
@@ -223,12 +228,65 @@ export function useWorkspaceStore() {
         });
       }
     }
+    for (const app of initial.applications ?? INITIAL_JOB_APPLICATIONS) {
+      if (app.handedOffToOnboarding) continue;
+      const vac = (initial.vacancies ?? INITIAL_VACANCIES).find((v) => v.id === app.vacancyId);
+      const ap = (initial.applicants ?? INITIAL_APPLICANT_PROFILES).find(
+        (p) => p.id === app.applicantId
+      );
+      if (!vac || !ap) continue;
+      const comp = calculateApplicantProfileCompleteness(ap);
+      if (comp.isEmployeeReady && (app.stage === 'Offering' || app.stage === 'Lolos & Siap Onboarding')) {
+        seeded.push({
+          id: `notif-rec-ready-${app.id}`,
+          type: 'applicant-ready',
+          title: `Kandidat Siap Handoff 100%: ${ap.fullName}`,
+          message: `${vac.position} (${vac.clientName}) — berkas & biodata lengkap 100%, siap dikonversi ke Admin Onboarding.`,
+          createdAt: 'Siap Verifikasi',
+          targetMenu: 'rec-handoff',
+          entityName: vac.clientName,
+          applicationId: app.id,
+          recipientRole: 'recruiter',
+          read: false,
+        });
+      } else if (app.stage === 'Jadwal Interview' && app.interview) {
+        seeded.push({
+          id: `notif-rec-iv-${app.id}`,
+          type: 'new-application',
+          title: `Jadwal Interview: ${ap.fullName} (${app.applicationCode})`,
+          message: `${vac.position} (${vac.clientName}) · ${formatIndonesianDate(app.interview.date)} ${app.interview.time} · Profil ${comp.percentage}%.`,
+          createdAt: 'Jadwal Aktif',
+          targetMenu: 'rec-interviews',
+          entityName: vac.clientName,
+          applicationId: app.id,
+          recipientRole: 'recruiter',
+          read: false,
+        });
+        seeded.push({
+          id: `notif-app-iv-${app.id}`,
+          type: 'interview-scheduled',
+          title: `Undangan Interview: ${vac.position}`,
+          message: `${formatIndonesianDate(app.interview.date)} ${app.interview.time} (${app.interview.mode}) · Pastikan biodata & dokumen lengkap.`,
+          createdAt: 'Jadwal Aktif',
+          targetMenu: 'app-interviews',
+          entityName: vac.clientName,
+          applicationId: app.id,
+          applicantId: ap.id,
+          recipientRole: 'applicant',
+          read: false,
+        });
+      }
+    }
     if (initial.notifications && initial.notifications.length > 0) {
       const existingIds = new Set(initial.notifications.map((n) => n.id));
-      const missingLeaveNotifs = seeded.filter(
-        (n) => n.type === 'leave-submitted' && !existingIds.has(n.id)
+      const missingSeededNotifs = seeded.filter(
+        (n) =>
+          (n.type === 'leave-submitted' ||
+            n.recipientRole === 'recruiter' ||
+            n.recipientRole === 'applicant') &&
+          !existingIds.has(n.id)
       );
-      return [...missingLeaveNotifs, ...initial.notifications];
+      return [...missingSeededNotifs, ...initial.notifications];
     }
     return seeded;
   });
@@ -354,22 +412,29 @@ export function useWorkspaceStore() {
     setApprovals((prev) =>
       prev.map((item) => (item.id === id ? { ...item, status: 'Disetujui' } : item))
     );
-    // If this approval was a PKWT extension proposal or onboarding activation, sync target status
+    // If this approval was a PKWT extension proposal from Admin, run full PKWT extension + Menu TTD handoff
     if (found.title.startsWith('Usulan Perpanjangan PKWT — ')) {
       const targetName = found.title.replace('Usulan Perpanjangan PKWT — ', '').trim();
-      setContracts((prev) =>
-        prev.map((c) =>
-          c.employeeName === targetName && c.contractType === 'PKWT'
-            ? {
-                ...c,
-                status: 'Diperpanjang',
-                extensionRequested: false,
-                daysRemaining: (c.daysRemaining ?? 0) + 180,
-                endDate: `${c.endDate} (+6 Bln)`,
-              }
-            : c
-        )
+      const matchingContract = contracts.find(
+        (c) => c.employeeName === targetName && c.contractType === 'PKWT'
       );
+      if (matchingContract) {
+        extendPkwtContract(matchingContract.id, actorLabel);
+      } else {
+        setContracts((prev) =>
+          prev.map((c) =>
+            c.employeeName === targetName && c.contractType === 'PKWT'
+              ? {
+                  ...c,
+                  status: 'Diperpanjang',
+                  extensionRequested: false,
+                  daysRemaining: (c.daysRemaining ?? 0) + 180,
+                  endDate: `${c.endDate} (+6 Bln)`,
+                }
+              : c
+          )
+        );
+      }
     }
     if (found.title.startsWith('Aktivasi Onboarding Karyawan Baru — ')) {
       const targetName = found.title.replace('Aktivasi Onboarding Karyawan Baru — ', '').trim();
@@ -382,6 +447,15 @@ export function useWorkspaceStore() {
         prev.map((emp) => (emp.fullName === targetName ? { ...emp, status: 'Aktif' } : emp))
       );
     }
+    setNotifications((prev) =>
+      prev.map((n) =>
+        n.recipientRole === 'master-admin' &&
+        (n.type === 'pkwt-extension-requested' || n.type === 'approval-pending') &&
+        found.title.includes(n.entityName ?? '')
+          ? { ...n, read: true }
+          : n
+      )
+    );
     appendAudit(actorLabel, 'Persetujuan', `Menyetujui permintaan: ${found.title}`, found.entityName);
   };
 
@@ -391,6 +465,24 @@ export function useWorkspaceStore() {
     setApprovals((prev) =>
       prev.map((item) => (item.id === id ? { ...item, status: 'Ditolak' } : item))
     );
+    if (found.title.startsWith('Usulan Perpanjangan PKWT — ')) {
+      const targetName = found.title.replace('Usulan Perpanjangan PKWT — ', '').trim();
+      setContracts((prev) =>
+        prev.map((c) =>
+          c.employeeName === targetName && c.contractType === 'PKWT'
+            ? { ...c, extensionRequested: false }
+            : c
+        )
+      );
+      pushNotification({
+        type: 'approval-pending',
+        title: `Usulan Perpanjangan PKWT Ditolak — ${targetName}`,
+        message: `Ditolak oleh ${actorLabel}. Status kontrak ${found.entityName} dikembalikan tanpa perpanjangan.`,
+        targetMenu: 'admin-onboarding',
+        entityName: found.entityName,
+        recipientRole: 'admin',
+      });
+    }
     appendAudit(actorLabel, 'Persetujuan', `Menolak permintaan: ${found.title}`, found.entityName);
   };
 
@@ -572,6 +664,16 @@ export function useWorkspaceStore() {
               passwordResetAt: data.passwordResetAt ?? existing.passwordResetAt,
               isNewHire: data.isNewHire ?? existing.isNewHire,
               createdAtIso: data.createdAtIso ?? existing.createdAtIso,
+              savedSignatureDataUrl: data.savedSignatureDataUrl ?? existing.savedSignatureDataUrl,
+              savedSignatureUpdatedAt:
+                data.savedSignatureUpdatedAt ?? existing.savedSignatureUpdatedAt,
+              bpjsKesehatanCardName: data.bpjsKesehatanCardName ?? existing.bpjsKesehatanCardName,
+              bpjsKesehatanCardDataUrl:
+                data.bpjsKesehatanCardDataUrl ?? existing.bpjsKesehatanCardDataUrl,
+              bpjsKetenagakerjaanCardName:
+                data.bpjsKetenagakerjaanCardName ?? existing.bpjsKetenagakerjaanCardName,
+              bpjsKetenagakerjaanCardDataUrl:
+                data.bpjsKetenagakerjaanCardDataUrl ?? existing.bpjsKetenagakerjaanCardDataUrl,
             }
           : e
       )
@@ -591,6 +693,43 @@ export function useWorkspaceStore() {
     );
   };
 
+  const saveEmployeeSignatureSpecimen = (
+    employeeId: string,
+    signatureDataUrl: string,
+    actorLabel: string
+  ): { ok: boolean; message: string } => {
+    const target = employees.find((e) => e.id === employeeId);
+    if (!target) return { ok: false, message: 'Data karyawan tidak ditemukan.' };
+    if (!signatureDataUrl.startsWith('data:image/')) {
+      return { ok: false, message: 'Silakan goreskan tanda tangan digital pada kanvas terlebih dahulu.' };
+    }
+    const now = new Date();
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+    const updatedAt = `${String(now.getDate()).padStart(2, '0')} ${months[now.getMonth()] ?? 'Nov'} ${now.getFullYear()} · ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    setEmployees((prev) =>
+      prev.map((emp) =>
+        emp.id === employeeId
+          ? {
+              ...emp,
+              savedSignatureDataUrl: signatureDataUrl,
+              savedSignatureUpdatedAt: updatedAt,
+            }
+          : emp
+      )
+    );
+    appendAudit(
+      actorLabel,
+      'Keamanan',
+      `Menyimpan spesimen tanda tangan digital melalui Menu TTD (${target.employeeCode})`,
+      `${target.fullName} · ${target.entityName}`
+    );
+    return {
+      ok: true,
+      message: `Tanda tangan digital pribadi berhasil disimpan (${updatedAt}). Saat ada kontrak/perpanjangan PKWT baru, Anda tetap harus meninjau dokumen terlebih dahulu sebelum membubuhkan TTD.`,
+    };
+  };
+
   const signEmployeePkwtDigitally = (
     employeeId: string,
     signatureDataUrl: string,
@@ -600,7 +739,7 @@ export function useWorkspaceStore() {
     const target = employees.find((e) => e.id === employeeId);
     if (!target) return { ok: false, message: 'Data karyawan tidak ditemukan.' };
     if (!signatureDataUrl.startsWith('data:image/')) {
-      return { ok: false, message: 'Buat tanda tangan digital pada kanvas terlebih dahulu.' };
+      return { ok: false, message: 'Buat tanda tangan digital pada kanvas atau simpan di Menu TTD terlebih dahulu.' };
     }
     const now = new Date();
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
@@ -631,6 +770,14 @@ export function useWorkspaceStore() {
       ? baseHistory.findIndex((h) => h.contractNumber === targetContractNumber)
       : baseHistory.findIndex((h) => h.signatureStatus === 'Menunggu TTD Karyawan');
     const resolvedIdx = matchIdx !== -1 ? matchIdx : baseHistory.length - 1;
+    const targetItem = baseHistory[resolvedIdx];
+
+    if (targetItem && isContractSignedLocked(targetItem.signatureStatus)) {
+      return {
+        ok: false,
+        message: `Dokumen ${targetItem.sequenceLabel} (${targetItem.contractNumber}) sudah ditandatangani dan terkunci permanen (tidak dapat diedit).`,
+      };
+    }
 
     const updatedHistory = baseHistory.map((item, idx) =>
       idx === resolvedIdx
@@ -640,7 +787,7 @@ export function useWorkspaceStore() {
             signedAt,
             signerEmployeeName: target.fullName,
             employeeSignatureDataUrl: signatureDataUrl,
-            notes: item.notes || 'Ditandatangani digital oleh karyawan melalui Portal Karyawan.',
+            notes: item.notes || 'Ditandatangani digital oleh karyawan melalui Portal Karyawan (Terkunci Permanen).',
           }
         : item
     );
@@ -654,6 +801,8 @@ export function useWorkspaceStore() {
               ...emp,
               status: emp.status === 'Probation' ? 'Aktif' : emp.status,
               documents: { ...emp.documents, contractUploaded: true },
+              savedSignatureDataUrl: emp.savedSignatureDataUrl || signatureDataUrl,
+              savedSignatureUpdatedAt: emp.savedSignatureUpdatedAt || signedAt,
               contractHistory: updatedHistory,
             }
           : emp
@@ -667,7 +816,7 @@ export function useWorkspaceStore() {
     pushNotification({
       type: 'pkwt-signed',
       title: `PKWT Ditandatangani: ${target.fullName} (${target.employeeCode})`,
-      message: `${updatedHistory[resolvedIdx]?.sequenceLabel ?? 'PKWT'} (${signedNumber}) telah ditandatangani secara digital pada ${signedAt}.`,
+      message: `${updatedHistory[resolvedIdx]?.sequenceLabel ?? 'PKWT'} (${signedNumber}) telah ditandatangani secara digital pada ${signedAt} dan tersimpan permanen.`,
       targetMenu: 'employees',
       employeeCode: target.employeeCode,
       entityName: target.entityName,
@@ -680,7 +829,7 @@ export function useWorkspaceStore() {
     );
     return {
       ok: true,
-      message: `PKWT (${signedNumber}) berhasil ditandatangani secara digital dan tersimpan ke Riwayat Kontrak Anda.`,
+      message: `PKWT (${signedNumber}) berhasil ditandatangani, tersimpan permanen & terkunci (hanya dapat dilihat dan diunduh).`,
     };
   };
 
@@ -1253,23 +1402,96 @@ export function useWorkspaceStore() {
   const extendPkwtContract = (id: string, actorLabel: string) => {
     const found = contracts.find((c) => c.id === id);
     if (!found) return;
-    setContracts((prev) =>
-      prev.map((c) =>
-        c.id === id
-          ? {
-              ...c,
-              status: 'Diperpanjang',
-              extensionRequested: false,
-              daysRemaining: (c.daysRemaining ?? 0) + 180,
-              endDate: `${c.endDate} (+6 Bln)`,
-            }
-          : c
+    const emp = employees.find(
+      (e) => e.employeeCode.toLowerCase() === found.employeeCode.toLowerCase()
+    );
+
+    if (emp) {
+      const extDraft = buildExtendedPkwtContractDraft({ employee: emp, months: 6 });
+      const priorHistory = (emp.contractHistory ?? []).map((item) =>
+        item.signatureStatus !== 'Selesai / Digantikan'
+          ? { ...item, signatureStatus: 'Selesai / Digantikan' as const }
+          : item
+      );
+      const nextHistory = [...priorHistory, extDraft.newHistoryItem];
+
+      setEmployees((prev) =>
+        prev.map((item) =>
+          item.id === emp.id
+            ? {
+                ...item,
+                contractType: 'PKWT',
+                contractNumber: extDraft.nextContractNumber,
+                contractEndDate: extDraft.nextEndDate,
+                documents: { ...item.documents, contractUploaded: false },
+                contractHistory: nextHistory,
+              }
+            : item
+        )
+      );
+
+      setContracts((prev) =>
+        prev.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                contractNumber: extDraft.nextContractNumber,
+                startDate: formatIndonesianDate(extDraft.nextStartDate),
+                endDate: formatIndonesianDate(extDraft.nextEndDate),
+                status: 'Diperpanjang',
+                extensionRequested: false,
+                daysRemaining: calculateDaysRemaining(extDraft.nextEndDate),
+              }
+            : c
+        )
+      );
+
+      pushNotification({
+        type: 'pkwt-pending-sign',
+        title: `Perpanjangan ${extDraft.sequenceLabel} Terbit (${extDraft.nextContractNumber})`,
+        message: `Kontrak ${extDraft.sequenceLabel} Anda sudah diterbitkan untuk periode ${formatIndonesianDate(extDraft.nextStartDate)} – ${formatIndonesianDate(extDraft.nextEndDate)}. Silakan buka Menu TTD untuk meninjau & menandatangani.`,
+        recipientRole: 'employee',
+        employeeCode: emp.employeeCode,
+        entityName: emp.entityName,
+        targetMenu: 'emp-signature',
+      });
+    } else {
+      setContracts((prev) =>
+        prev.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                status: 'Diperpanjang',
+                extensionRequested: false,
+                daysRemaining: (c.daysRemaining ?? 0) + 180,
+                endDate: `${c.endDate} (+6 Bln)`,
+              }
+            : c
+        )
+      );
+    }
+
+    setApprovals((prev) =>
+      prev.map((item) =>
+        item.status === 'Menunggu' &&
+        item.title === `Usulan Perpanjangan PKWT — ${found.employeeName}`
+          ? { ...item, status: 'Disetujui' }
+          : item
       )
     );
+    setNotifications((prev) =>
+      prev.map((n) =>
+        n.type === 'pkwt-extension-requested' &&
+        n.employeeCode?.toLowerCase() === found.employeeCode.toLowerCase()
+          ? { ...n, read: true }
+          : n
+      )
+    );
+
     appendAudit(
       actorLabel,
       'Operasional',
-      `Memperpanjang kontrak ${found.contractNumber} selama 6 bulan`,
+      `Menerbitkan perpanjangan kontrak ${found.contractNumber} (+6 bulan) berstatus Menunggu TTD Karyawan`,
       `${found.employeeName} · ${found.entityName}`
     );
   };
@@ -1293,6 +1515,15 @@ export function useWorkspaceStore() {
       },
       ...prev,
     ]);
+    pushNotification({
+      type: 'pkwt-extension-requested',
+      title: `Usulan Perpanjangan PKWT: ${found.employeeName} (${found.employeeCode})`,
+      message: `Diajukan oleh ${adminName} untuk kontrak ${found.contractNumber} (${found.entityName}). Klik untuk ACC & terbitkan ke Menu TTD Karyawan.`,
+      targetMenu: 'monitoring',
+      employeeCode: found.employeeCode,
+      entityName: found.entityName,
+      recipientRole: 'master-admin',
+    });
     appendAudit(
       actorLabel,
       'Operasional',
@@ -1328,6 +1559,15 @@ export function useWorkspaceStore() {
       },
       ...prev,
     ]);
+    pushNotification({
+      type: 'approval-pending',
+      title: `Permohonan Aktivasi Onboarding: ${employeeData.fullName}`,
+      message: `Diajukan oleh ${adminName} (${employeeData.entityName}). Buka Ringkasan untuk aktivasi status karyawan.`,
+      targetMenu: 'overview',
+      employeeCode: employeeData.employeeCode,
+      entityName: employeeData.entityName,
+      recipientRole: 'master-admin',
+    });
     appendAudit(
       actorLabel,
       'Operasional',
@@ -1506,9 +1746,33 @@ export function useWorkspaceStore() {
     patch: Partial<ApplicantProfileRecord>,
     actorLabel?: string
   ) => {
+    const existing = applicants.find((app) => app.id === applicantId);
+    const wasReady = existing ? calculateApplicantProfileCompleteness(existing).isEmployeeReady : false;
+    const nextMerged = existing ? { ...existing, ...patch } : null;
+    const isNowReady = nextMerged
+      ? calculateApplicantProfileCompleteness(nextMerged).isEmployeeReady
+      : false;
+
     setApplicants((prev) =>
       prev.map((app) => (app.id === applicantId ? { ...app, ...patch } : app))
     );
+    if (!wasReady && isNowReady && nextMerged) {
+      const activeApp = applications.find(
+        (a) => a.applicantId === applicantId && !a.handedOffToOnboarding && a.stage !== 'Tidak Lolos'
+      );
+      const activeVac = activeApp ? vacancies.find((v) => v.id === activeApp.vacancyId) : undefined;
+      if (activeApp && activeVac) {
+        pushNotification({
+          type: 'applicant-ready',
+          title: `Berkas Pelamar Lengkap 100%: ${nextMerged.fullName}`,
+          message: `${activeVac.position} (${activeVac.clientName}) — data karyawan & dokumen lengkap, siap diproses ke Handoff Onboarding.`,
+          targetMenu: 'rec-handoff',
+          entityName: activeVac.clientName,
+          applicationId: activeApp.id,
+          recipientRole: 'recruiter',
+        });
+      }
+    }
     if (actorLabel) {
       appendAudit(
         actorLabel,
@@ -1555,6 +1819,15 @@ export function useWorkspaceStore() {
     };
 
     setApplications((prev) => [newApp, ...prev]);
+    pushNotification({
+      type: 'new-application',
+      title: `Lamaran Baru: ${applicant.fullName} (${newApp.applicationCode})`,
+      message: `Melamar posisi ${vacancy.position} · ${vacancy.clientName} (${vacancy.placementLocation}).`,
+      targetMenu: 'rec-pipeline',
+      entityName: vacancy.clientName,
+      applicationId: newApp.id,
+      recipientRole: 'recruiter',
+    });
     appendAudit(
       `${applicant.fullName} (${applicant.applicantCode})`,
       'Operasional',
@@ -1662,6 +1935,8 @@ export function useWorkspaceStore() {
         ? options.requiresFullProfile
         : target.requiresFullProfile || contactedStages.includes(nextStage);
 
+    const vac = vacancies.find((v) => v.id === target.vacancyId);
+
     setApplications((prev) =>
       prev.map((a) =>
         a.id === applicationId
@@ -1675,6 +1950,16 @@ export function useWorkspaceStore() {
           : a
       )
     );
+    pushNotification({
+      type: 'application-updated',
+      title: `Pembaruan Tahap Lamaran (${nextStage})`,
+      message: `${vac?.position ?? 'Lowongan Kerja'} · ${shouldRequireFull ? 'Silakan lengkapi profil & dokumen karyawan 100% di menu Profil & Berkas.' : options.recruiterNotes || 'Pantau progres terbaru di menu Lamaran Saya.'}`,
+      targetMenu: shouldRequireFull ? 'app-profile' : 'app-applications',
+      entityName: vac?.clientName,
+      applicationId: target.id,
+      applicantId: target.applicantId,
+      recipientRole: 'applicant',
+    });
     appendAudit(
       actorLabel,
       'Operasional',
@@ -1691,6 +1976,7 @@ export function useWorkspaceStore() {
     const target = applications.find((a) => a.id === applicationId);
     if (!target) return;
     const applicant = applicants.find((ap) => ap.id === target.applicantId);
+    const vac = vacancies.find((v) => v.id === target.vacancyId);
 
     setApplications((prev) =>
       prev.map((a) =>
@@ -1705,6 +1991,16 @@ export function useWorkspaceStore() {
           : a
       )
     );
+    pushNotification({
+      type: 'interview-scheduled',
+      title: `Undangan Interview: ${vac?.position ?? target.applicationCode}`,
+      message: `Jadwal: ${formatIndonesianDate(schedule.date)} pukul ${schedule.time} (${schedule.mode} · ${schedule.locationOrLink}). Lengkapi profil & berkas Anda sebelum wawancara.`,
+      targetMenu: 'app-interviews',
+      entityName: vac?.clientName,
+      applicationId: target.id,
+      applicantId: target.applicantId,
+      recipientRole: 'applicant',
+    });
     appendAudit(
       actorLabel,
       'Operasional',
@@ -1723,6 +2019,7 @@ export function useWorkspaceStore() {
     const target = applications.find((a) => a.id === applicationId);
     if (!target) return;
     const applicant = applicants.find((ap) => ap.id === target.applicantId);
+    const vac = vacancies.find((v) => v.id === target.vacancyId);
 
     setApplications((prev) =>
       prev.map((a) =>
@@ -1739,6 +2036,16 @@ export function useWorkspaceStore() {
           : a
       )
     );
+    pushNotification({
+      type: 'application-updated',
+      title: `Hasil Evaluasi Interview: ${nextStage}`,
+      message: `${vac?.position ?? target.applicationCode} · Skor ${score}/100${summary.trim() ? ` — ${summary.trim()}` : ''}`,
+      targetMenu: 'app-applications',
+      entityName: vac?.clientName,
+      applicationId: target.id,
+      applicantId: target.applicantId,
+      recipientRole: 'applicant',
+    });
     appendAudit(
       actorLabel,
       'Operasional',
@@ -1810,6 +2117,9 @@ export function useWorkspaceStore() {
     const generatedNik = generateClientEmployeeNik(resolvedEntity, employees);
     const matchedPlacement =
       resolvedEntity.supportedPlacements?.find((loc) => loc.id === placementId) ??
+      (vacancy.placementId
+        ? resolvedEntity.supportedPlacements?.find((loc) => loc.id === vacancy.placementId)
+        : undefined) ??
       resolvedEntity.supportedPlacements?.find((loc) =>
         vacancy.placementLocation.toLowerCase().includes(loc.name.toLowerCase())
       ) ??
@@ -2368,6 +2678,16 @@ export function useWorkspaceStore() {
           : l
       )
     );
+    pushNotification({
+      type: 'alpha-clarified',
+      title: `Klarifikasi Alpha Karyawan: ${found.employeeName} (${found.employeeCode})`,
+      message: `${found.dateRange} · "${explanation.trim()}" (${found.entityName}).`,
+      targetMenu: 'monitoring',
+      employeeCode: found.employeeCode,
+      entityName: found.entityName,
+      leaveId: found.id,
+      recipientRole: 'admin',
+    });
     appendAudit(
       actorLabel,
       'Operasional',
@@ -2394,6 +2714,10 @@ export function useWorkspaceStore() {
         | 'bankAccountHolder'
         | 'bankBranch'
         | 'documents'
+        | 'bpjsKesehatanCardName'
+        | 'bpjsKesehatanCardDataUrl'
+        | 'bpjsKetenagakerjaanCardName'
+        | 'bpjsKetenagakerjaanCardDataUrl'
       >
     >,
     actorLabel: string
@@ -2411,13 +2735,27 @@ export function useWorkspaceStore() {
     );
   };
 
+  const liveSnapshots = useMemo(
+    () =>
+      buildLiveOperationalSnapshots({
+        entities,
+        vacancies,
+        applications,
+        contracts,
+        leaveAbsences,
+        attendanceLogs,
+        baseSnapshots: snapshots,
+      }),
+    [entities, vacancies, applications, contracts, leaveAbsences, attendanceLogs, snapshots]
+  );
+
   return {
     entities,
     departments,
     employees,
     users,
     approvals,
-    snapshots,
+    snapshots: liveSnapshots,
     attendanceLogs,
     leaveAbsences,
     contracts,
@@ -2440,6 +2778,7 @@ export function useWorkspaceStore() {
     removeClientEntity,
     createEmployee,
     updateEmployee,
+    saveEmployeeSignatureSpecimen,
     signEmployeePkwtDigitally,
     addOrUploadEmployeeContractHistory,
     deleteEmployee,

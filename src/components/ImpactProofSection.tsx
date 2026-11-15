@@ -63,10 +63,11 @@ export const ImpactProofSection: React.FC = () => {
             {/* Attributable Testimonial Card */}
             <blockquote className="bg-white border border-[#E2E8F0] rounded-[6px] p-6">
               <p className="text-sm sm:text-base text-[#172033] leading-relaxed mb-4">
-                “Sebelum menggunakan PEVORA, rekapitulasi absensi cabang dan validasi penggajian
-                memakan waktu lima hari kerja setiap bulan. Dengan pemisahan akses Admin dan
-                Master Admin yang terstruktur, proses tutup buku payroll kini selesai dalam satu
-                hari dengan jejak audit yang jelas.”
+                “Sebelum menggunakan PEVORA, rekapitulasi absensi cabang klien, verifikasi 11 berkas
+                karyawan baru, dan pemantauan akhir kontrak PKWT memakan waktu berhari-hari. Dengan
+                presensi biometrik anti-spoof live, Menu TTD PKWT terkunci otomatis, serta kartu
+                digital BPJS terpusat, seluruh operasional lintas penempatan kini terpantau
+                real-time dengan jejak audit yang jelas.”
               </p>
               <footer className="flex flex-wrap items-center gap-2 text-xs text-[#64748B]">
                 <span className="font-bold text-[#102B69]">Hendra Wijaya</span>

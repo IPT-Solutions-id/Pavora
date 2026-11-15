@@ -1,11 +1,15 @@
-import type {
-  EmployeeDocumentsRecord,
-  EmployeeFormInput,
-  EmploymentCategory,
-  EntityRecord,
-  EmergencyContactRecord,
-  FamilyMemberRecord,
-  KtpAddressRecord,
+import {
+  formatIndonesianDate,
+  normalizeWhatsappNumberToInternational,
+  type EmployeeDocumentsRecord,
+  type EmployeeFormInput,
+  type EmploymentCategory,
+  type EntityRecord,
+  type EmergencyContactRecord,
+  type FamilyMemberRecord,
+  type KtpAddressRecord,
+  type SupportedClientPosition,
+  type SupportedPlacementLocation,
 } from './masterAdminData.ts';
 
 export type VacancyStatus = 'Aktif' | 'Mendesak' | 'Ditutup' | 'Draft';
@@ -20,6 +24,10 @@ export interface JobVacancyRecord {
   position: string;
   department: string;
   placementLocation: string;
+  placementId?: string;
+  placementName?: string;
+  placementArea?: string;
+  placementMapsUrl?: string;
   headcountNeeded: number;
   headcountFilled: number;
   contractType: 'PKWT' | 'PKWTT';
@@ -154,7 +162,7 @@ export const INITIAL_VACANCIES: JobVacancyRecord[] = [
     deadlineDate: '2026-12-15',
     urgency: 'Mendesak',
     status: 'Mendesak',
-    recruiterName: 'Dina Lestari',
+    recruiterName: 'Rama Wijaya',
     createdAt: '10 Nov 2026',
   },
   {
@@ -186,7 +194,7 @@ export const INITIAL_VACANCIES: JobVacancyRecord[] = [
     deadlineDate: '2026-12-20',
     urgency: 'Normal',
     status: 'Aktif',
-    recruiterName: 'Dina Lestari',
+    recruiterName: 'Rama Wijaya',
     createdAt: '08 Nov 2026',
   },
   {
@@ -218,7 +226,7 @@ export const INITIAL_VACANCIES: JobVacancyRecord[] = [
     deadlineDate: '2026-12-10',
     urgency: 'Mendesak',
     status: 'Mendesak',
-    recruiterName: 'Dina Lestari',
+    recruiterName: 'Rama Wijaya',
     createdAt: '06 Nov 2026',
   },
   {
@@ -250,7 +258,7 @@ export const INITIAL_VACANCIES: JobVacancyRecord[] = [
     deadlineDate: '2026-12-28',
     urgency: 'Normal',
     status: 'Aktif',
-    recruiterName: 'Dina Lestari',
+    recruiterName: 'Rama Wijaya',
     createdAt: '05 Nov 2026',
   },
 ];
@@ -259,9 +267,9 @@ export const INITIAL_APPLICANT_PROFILES: ApplicantProfileRecord[] = [
   {
     id: 'app-user-1',
     applicantCode: 'PLM-2026-001',
-    loginId: 'plm-sari',
+    loginId: 'swa-pelamar',
     fullName: 'Sari Wulandari',
-    email: 'sari.wulandari@pelamar-demo.id',
+    email: 'swa-pelamar@pelamar-demo.id',
     password: '1234',
     whatsappNumber: '081294550112',
     nik: '3174025407000003',
@@ -427,7 +435,7 @@ export const INITIAL_JOB_APPLICATIONS: JobApplicationRecord[] = [
       time: '10:00 WIB',
       mode: 'Offline (Datang ke Kantor)',
       locationOrLink: 'Graha Swatama SWAPRO Lt. 2, Jl. Raya Tanjung Barat No. 129, Jakarta Selatan',
-      interviewerName: 'Dina Lestari & Koordinator Klien BAF',
+      interviewerName: 'Rama Wijaya & Koordinator Klien BAF',
       notesToApplicant:
         'Harap hadir 15 menit lebih awal membawa KTP asli & melengkapi No. KK serta Buku Rekening di Profil Pelamar.',
     },
@@ -448,7 +456,7 @@ export const INITIAL_JOB_APPLICATIONS: JobApplicationRecord[] = [
       time: '13:30 WIB',
       mode: 'Online (Video Call)',
       locationOrLink: 'https://meet.swapro-demo.co.id/rekrutmen-adira-102',
-      interviewerName: 'Dina Lestari',
+      interviewerName: 'Rama Wijaya',
       notesToApplicant: 'Diskusi kompensasi dan penempatan wilayah Jakarta Pusat.',
       evaluationScore: 91,
       evaluationSummary: 'Komunikatif, memiliki SIM C aktif, memahami SOP verifikasi lapangan.',
@@ -687,3 +695,307 @@ export function buildApplicantEmployeeFormPrefill(
     placementLocation: `${vacancy.clientName} — ${vacancy.placementLocation}`,
   };
 }
+
+export interface MasterClientVacancyOption {
+  entity: EntityRecord;
+  positions: SupportedClientPosition[];
+  placements: SupportedPlacementLocation[];
+}
+
+export function filterRecruiterVacanciesByScope(
+  vacancies: JobVacancyRecord[],
+  assignedScopes: string[],
+  selectedScope = 'Semua Cakupan'
+): JobVacancyRecord[] {
+  if (!assignedScopes || assignedScopes.length === 0) return [];
+  const normalizedScopes = assignedScopes.map((s) => s.trim().toLowerCase());
+  const normalizedSelected = selectedScope.trim().toLowerCase();
+
+  return vacancies.filter((vac) => {
+    const clientLower = vac.clientName.trim().toLowerCase();
+    const inAssigned = normalizedScopes.includes(clientLower);
+    if (!inAssigned) return false;
+    if (!selectedScope || selectedScope === 'Semua Cakupan') return true;
+    return clientLower === normalizedSelected;
+  });
+}
+
+export function resolveMasterClientVacancyOptions(
+  entities: EntityRecord[],
+  assignedScopes: string[]
+): MasterClientVacancyOption[] {
+  if (!assignedScopes || assignedScopes.length === 0) return [];
+  const normalizedScopes = new Set(assignedScopes.map((s) => s.trim().toLowerCase()));
+  return entities
+    .filter((ent) => ent.status === 'Aktif' && normalizedScopes.has(ent.name.trim().toLowerCase()))
+    .map((entity) => ({
+      entity,
+      positions: entity.supportedPositions ?? [],
+      placements: entity.supportedPlacements ?? [],
+    }));
+}
+
+export interface ValidateMasterClientVacancyInput {
+  entities: EntityRecord[];
+  assignedScopes: string[];
+  clientName: string;
+  position: string;
+  placementId: string;
+  headcountNeeded: number;
+  jobdesk: string[];
+  requirements: string[];
+  mode: 'create' | 'edit';
+}
+
+export function validateMasterClientVacancySelection(
+  input: ValidateMasterClientVacancyInput
+): {
+  ok: boolean;
+  error?: string;
+  matchedEntity?: EntityRecord;
+  matchedPosition?: SupportedClientPosition;
+  matchedPlacement?: SupportedPlacementLocation;
+} {
+  const options = resolveMasterClientVacancyOptions(input.entities, input.assignedScopes);
+  if (options.length === 0) {
+    return {
+      ok: false,
+      error:
+        'Akun Rekruter Anda belum memiliki cakupan Client / Unit aktif dari Master Admin. Hubungi Master Admin untuk menetapkan cakupan.',
+    };
+  }
+
+  const matchedOption = options.find(
+    (opt) => opt.entity.name.trim().toLowerCase() === input.clientName.trim().toLowerCase()
+  );
+  if (!matchedOption) {
+    return {
+      ok: false,
+      error:
+        'Client wajib dipilih dari daftar Master Client aktif yang sesuai dengan cakupan akun Rekruter Anda.',
+    };
+  }
+
+  if (matchedOption.positions.length === 0) {
+    return {
+      ok: false,
+      error: `Master Admin belum menambahkan daftar Posisi yang Disupport pada "${matchedOption.entity.name}". Tambahkan posisi di menu Unit & Klien terlebih dahulu.`,
+    };
+  }
+
+  const matchedPosition = matchedOption.positions.find(
+    (pos) => pos.title.trim().toLowerCase() === input.position.trim().toLowerCase()
+  );
+  if (!matchedPosition && input.mode === 'create') {
+    return {
+      ok: false,
+      error: `Posisi "${input.position || '—'}" harus dipilih dari posisi yang sudah di-set Master Admin untuk ${matchedOption.entity.name}.`,
+    };
+  }
+  if (input.mode === 'edit' && !input.position.trim()) {
+    return {
+      ok: false,
+      error: 'Posisi / Jabatan lowongan wajib dipilih.',
+    };
+  }
+
+  if (matchedOption.placements.length === 0) {
+    return {
+      ok: false,
+      error: `Master Admin belum mengatur Cabang / Lokasi Penempatan pada "${matchedOption.entity.name}". Set lokasi penempatan di Master Admin terlebih dahulu.`,
+    };
+  }
+
+  const matchedPlacement = matchedOption.placements.find((loc) => loc.id === input.placementId);
+  if (!matchedPlacement) {
+    return {
+      ok: false,
+      error: `Lokasi penempatan wajib dipilih dari cabang/area "${matchedOption.entity.name}" yang sudah di-set di Master Admin.`,
+    };
+  }
+
+  if (!Number.isFinite(input.headcountNeeded) || input.headcountNeeded < 1) {
+    return {
+      ok: false,
+      error: 'Kebutuhan jumlah orang minimal 1.',
+    };
+  }
+
+  if (input.jobdesk.length === 0 || input.requirements.length === 0) {
+    return {
+      ok: false,
+      error: 'Isi minimal 1 baris Jobdesk dan 1 baris Persyaratan kandidat.',
+    };
+  }
+
+  return {
+    ok: true,
+    matchedEntity: matchedOption.entity,
+    matchedPosition,
+    matchedPlacement,
+  };
+}
+
+export function buildApplicantWhatsappUrl(
+  applicant: ApplicantProfileRecord,
+  application: JobApplicationRecord,
+  vacancy?: JobVacancyRecord,
+  mode: 'auto' | 'pipeline' | 'interview' | 'documents' = 'auto'
+): string {
+  const intlWa = normalizeWhatsappNumberToInternational(applicant.whatsappNumber || '');
+  if (!intlWa) return '#';
+
+  const completeness = calculateApplicantProfileCompleteness(applicant);
+  const resolvedMode =
+    mode !== 'auto'
+      ? mode
+      : application.stage === 'Jadwal Interview' && application.interview
+        ? 'interview'
+        : !completeness.isEmployeeReady &&
+            application.stage !== 'Lamaran Masuk' &&
+            application.stage !== 'Tidak Lolos'
+          ? 'documents'
+          : 'pipeline';
+
+  const posLabel = vacancy?.position ?? 'posisi dilamar';
+  const clientLabel = vacancy?.clientName ?? 'Mitra SWAPRO';
+  const placementLabel = vacancy?.placementLocation ? ` (${vacancy.placementLocation})` : '';
+
+  let text = '';
+  if (resolvedMode === 'interview' && application.interview) {
+    const iv = application.interview;
+    text = [
+      `Halo ${applicant.fullName} (${application.applicationCode}),`,
+      '',
+      `Kami dari Tim Rekrutmen PEVORA / PT Swapro Nusantara mengundang Anda untuk mengikuti tahap *Wawancara* posisi *${posLabel}* — *${clientLabel}*${placementLabel}:`,
+      `- Tanggal: ${formatIndonesianDate(iv.date)}`,
+      `- Jam: ${iv.time}`,
+      `- Metode: ${iv.mode}`,
+      `- Lokasi / Link: ${iv.locationOrLink}`,
+      `- Pewawancara: ${iv.interviewerName}`,
+      iv.notesToApplicant ? `- Catatan: ${iv.notesToApplicant}` : '',
+      !completeness.isEmployeeReady
+        ? `\nMohon sekaligus melengkapi sisa data karyawan Anda di Portal Pelamar (saat ini ${completeness.percentage}% — kurang: ${completeness.missingEmployeeFields.slice(0, 3).join(', ')}).`
+        : '',
+      '',
+      'Mohon konfirmasi kehadirannya melalui pesan ini. Terima kasih.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  } else if (resolvedMode === 'documents') {
+    const missingList =
+      completeness.missingEmployeeFields.slice(0, 4).join(', ') || 'dokumen pendukung';
+    text = [
+      `Halo ${applicant.fullName} (${application.applicationCode}),`,
+      '',
+      `Lamaran Anda untuk posisi *${posLabel}* (${clientLabel}) saat ini berada pada tahap *${application.stage}*.`,
+      `Kelengkapan profil & berkas karyawan Anda tercatat *${completeness.percentage}%*. Agar bisa segera diproses ke tahap Onboarding/PKWT, mohon lengkapi sisa data berikut di Portal Pelamar:`,
+      `- ${missingList}`,
+      '',
+      'Terima kasih,',
+      'Tim Rekrutmen PEVORA / PT Swapro Nusantara',
+    ].join('\n');
+  } else {
+    text = [
+      `Halo ${applicant.fullName} (${application.applicationCode}),`,
+      '',
+      `Terkait lamaran Anda untuk posisi *${posLabel}* di *${clientLabel}*${placementLabel}, status seleksi Anda saat ini adalah *${application.stage}*.`,
+      application.interview?.evaluationScore !== undefined
+        ? `Skor evaluasi interview: ${application.interview.evaluationScore}/100.`
+        : '',
+      'Silakan pantau Portal Pelamar atau balas pesan ini jika ada pertanyaan lebih lanjut.',
+      '',
+      'Terima kasih,',
+      'Tim Rekrutmen PEVORA / PT Swapro Nusantara',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return `https://wa.me/${intlWa}?text=${encodeURIComponent(text)}`;
+}
+
+export function buildApplicantMailtoUrl(
+  applicant: ApplicantProfileRecord,
+  application: JobApplicationRecord,
+  vacancy?: JobVacancyRecord,
+  mode: 'auto' | 'pipeline' | 'interview' | 'documents' = 'auto'
+): string {
+  const email = applicant.email.trim();
+  if (!email) return '#';
+
+  const completeness = calculateApplicantProfileCompleteness(applicant);
+  const resolvedMode =
+    mode !== 'auto'
+      ? mode
+      : application.stage === 'Jadwal Interview' && application.interview
+        ? 'interview'
+        : !completeness.isEmployeeReady &&
+            application.stage !== 'Lamaran Masuk' &&
+            application.stage !== 'Tidak Lolos'
+          ? 'documents'
+          : 'pipeline';
+
+  const posLabel = vacancy?.position ?? 'Posisi Dilamar';
+  const clientLabel = vacancy?.clientName ?? 'Mitra SWAPRO';
+
+  let subject = `Update Rekrutmen PEVORA (${application.applicationCode}) — ${posLabel}`;
+  let body = '';
+
+  if (resolvedMode === 'interview' && application.interview) {
+    const iv = application.interview;
+    subject = `Undangan Interview — ${posLabel} (${clientLabel}) · ${application.applicationCode}`;
+    body = [
+      `Halo ${applicant.fullName},`,
+      '',
+      `Terima kasih telah melamar posisi ${posLabel} untuk penempatan ${clientLabel}${vacancy?.placementLocation ? ` (${vacancy.placementLocation})` : ''}.`,
+      'Berikut detail jadwal wawancara Anda:',
+      `- Tanggal: ${formatIndonesianDate(iv.date)}`,
+      `- Jam: ${iv.time}`,
+      `- Metode: ${iv.mode}`,
+      `- Lokasi / Link Meeting: ${iv.locationOrLink}`,
+      `- Pewawancara: ${iv.interviewerName}`,
+      iv.notesToApplicant ? `- Catatan: ${iv.notesToApplicant}` : '',
+      !completeness.isEmployeeReady
+        ? `\nMohon lengkapi pula profil & berkas karyawan pada Portal Pelamar (saat ini ${completeness.percentage}%).`
+        : '',
+      '',
+      'Mohon konfirmasi kehadiran Anda dengan membalas email ini.',
+      '',
+      'Salam,',
+      'Tim Rekrutmen PEVORA / PT Swapro Nusantara',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  } else if (resolvedMode === 'documents') {
+    subject = `Permintaan Kelengkapan Berkas Kandidat (${completeness.percentage}%) — ${posLabel}`;
+    body = [
+      `Halo ${applicant.fullName},`,
+      '',
+      `Lamaran Anda (${application.applicationCode}) untuk posisi ${posLabel} — ${clientLabel} saat ini berada di tahap ${application.stage}.`,
+      `Mohon segera melengkapi sisa data & dokumen karyawan di Portal Pelamar (saat ini ${completeness.percentage}%):`,
+      `- Kekurangan utama: ${completeness.missingEmployeeFields.slice(0, 5).join(', ')}`,
+      '',
+      'Terima kasih,',
+      'Tim Rekrutmen PEVORA / PT Swapro Nusantara',
+    ].join('\n');
+  } else {
+    body = [
+      `Halo ${applicant.fullName},`,
+      '',
+      `Status lamaran Anda (${application.applicationCode}) untuk posisi ${posLabel} di ${clientLabel} saat ini berada pada tahap: ${application.stage}.`,
+      application.interview?.evaluationScore !== undefined
+        ? `Skor Evaluasi Interview: ${application.interview.evaluationScore}/100.`
+        : '',
+      'Silakan login ke Portal Pelamar untuk melihat detail perkembangan seleksi Anda.',
+      '',
+      'Salam,',
+      'Tim Rekrutmen PEVORA / PT Swapro Nusantara',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+

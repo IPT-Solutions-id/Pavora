@@ -354,10 +354,16 @@ export interface WorkspaceNotificationRecord {
     | 'pkwt-signed'
     | 'pkwt-expiring'
     | 'pkwt-pending-sign'
+    | 'pkwt-extension-requested'
     | 'approval-pending'
     | 'leave-submitted'
     | 'leave-approved'
-    | 'leave-rejected';
+    | 'leave-rejected'
+    | 'alpha-clarified'
+    | 'new-application'
+    | 'applicant-ready'
+    | 'interview-scheduled'
+    | 'application-updated';
   title: string;
   message: string;
   createdAt: string;
@@ -365,13 +371,16 @@ export interface WorkspaceNotificationRecord {
   employeeCode?: string;
   entityName?: string;
   leaveId?: string;
-  recipientRole?: 'admin' | 'employee';
+  applicationId?: string;
+  applicantId?: string;
+  recipientRole?: 'admin' | 'master-admin' | 'employee' | 'recruiter' | 'applicant';
   read: boolean;
 }
 
 export interface EmployeeRecord {
   id: string;
   employeeCode: string;
+  loginAlias?: string;
   fullName: string;
   email: string;
   whatsappNumber: string;
@@ -422,6 +431,12 @@ export interface EmployeeRecord {
   createdAtIso?: string;
   contractHistory?: ContractHistoryItem[];
   faceBiometric?: EmployeeFaceBiometricRecord;
+  savedSignatureDataUrl?: string;
+  savedSignatureUpdatedAt?: string;
+  bpjsKesehatanCardName?: string;
+  bpjsKesehatanCardDataUrl?: string;
+  bpjsKetenagakerjaanCardName?: string;
+  bpjsKetenagakerjaanCardDataUrl?: string;
 }
 
 export interface EmployeeFormInput {
@@ -476,6 +491,12 @@ export interface EmployeeFormInput {
   createdAtIso?: string;
   contractHistory?: ContractHistoryItem[];
   faceBiometric?: EmployeeFaceBiometricRecord;
+  savedSignatureDataUrl?: string;
+  savedSignatureUpdatedAt?: string;
+  bpjsKesehatanCardName?: string;
+  bpjsKesehatanCardDataUrl?: string;
+  bpjsKetenagakerjaanCardName?: string;
+  bpjsKetenagakerjaanCardDataUrl?: string;
 }
 
 export const INITIAL_ENTITIES: EntityRecord[] = [
@@ -515,6 +536,14 @@ export const INITIAL_ENTITIES: EntityRecord[] = [
         baseSalary: 7000000,
       },
     ],
+    supportedPlacements: [
+      {
+        id: 'plc-int-ho-1',
+        name: 'Graha Swatama — Tanjung Barat',
+        area: 'Jakarta Selatan',
+        mapsUrl: '',
+      },
+    ],
   },
   {
     id: 'ent-2',
@@ -522,7 +551,7 @@ export const INITIAL_ENTITIES: EntityRecord[] = [
     name: 'Pusat Rekrutmen & Pelatihan',
     category: 'Internal',
     city: 'Bandung',
-    lead: 'Dina Lestari',
+    lead: 'Rama Wijaya',
     employeeCount: 24,
     departmentCount: 2,
     status: 'Aktif',
@@ -545,6 +574,14 @@ export const INITIAL_ENTITIES: EntityRecord[] = [
         baseSalary: 5100000,
       },
     ],
+    supportedPlacements: [
+      {
+        id: 'plc-int-rec-1',
+        name: 'Kantor Rekrutmen & Asesmen Bandung',
+        area: 'Bandung & Jawa Barat',
+        mapsUrl: '',
+      },
+    ],
   },
   {
     id: 'ent-3',
@@ -552,7 +589,7 @@ export const INITIAL_ENTITIES: EntityRecord[] = [
     name: 'Adira Finance — Penempatan Regional',
     category: 'Klien Penempatan',
     city: 'Jakarta & Jawa Barat',
-    lead: 'Siti Rahmawati',
+    lead: 'Ulan Rahmawati',
     employeeCount: 142,
     departmentCount: 3,
     status: 'Aktif',
@@ -652,7 +689,7 @@ export const INITIAL_ENTITIES: EntityRecord[] = [
     name: 'BAF — Layanan Operasional Cabang',
     category: 'Klien Penempatan',
     city: 'Jakarta Pusat',
-    lead: 'Siti Rahmawati',
+    lead: 'Ulan Rahmawati',
     employeeCount: 78,
     departmentCount: 2,
     status: 'Aktif',
@@ -710,7 +747,7 @@ export const INITIAL_DEPARTMENTS: DepartmentRecord[] = [
     name: 'Layanan Administrasi Klien & Kontrak',
     entityName: 'Kantor Pusat Operasional',
     category: 'Internal',
-    head: 'Siti Rahmawati',
+    head: 'Ulan Rahmawati',
     gradeRange: 'Grade 3 – Grade 6',
     headcount: 26,
   },
@@ -719,7 +756,7 @@ export const INITIAL_DEPARTMENTS: DepartmentRecord[] = [
     name: 'Akuisisi Talenta & Seleksi Klien',
     entityName: 'Pusat Rekrutmen & Pelatihan',
     category: 'Internal',
-    head: 'Dina Lestari',
+    head: 'Rama Wijaya',
     gradeRange: 'Grade 3 – Grade 5',
     headcount: 24,
   },
@@ -728,7 +765,7 @@ export const INITIAL_DEPARTMENTS: DepartmentRecord[] = [
     name: 'Tim Lapangan & Dukungan Klien Adira',
     entityName: 'Adira Finance — Penempatan Regional',
     category: 'Klien Penempatan',
-    head: 'Siti Rahmawati',
+    head: 'Ulan Rahmawati',
     gradeRange: 'Grade 1 – Grade 4',
     headcount: 142,
   },
@@ -746,7 +783,7 @@ export const INITIAL_DEPARTMENTS: DepartmentRecord[] = [
     name: 'Tim Layanan Klien BAF',
     entityName: 'BAF — Layanan Operasional Cabang',
     category: 'Klien Penempatan',
-    head: 'Siti Rahmawati',
+    head: 'Ulan Rahmawati',
     gradeRange: 'Grade 1 – Grade 4',
     headcount: 78,
   },
@@ -770,9 +807,9 @@ export const INITIAL_USERS: UserAccountRecord[] = [
   {
     id: 'usr-2',
     employeeCode: 'ADM-014',
-    loginAlias: 'adm-siti',
-    fullName: 'Siti Rahmawati',
-    email: 'siti.rahmawati@swapro-demo.co.id',
+    loginAlias: 'swa-ulan',
+    fullName: 'Ulan Rahmawati',
+    email: 'swa-ulan@swapro-demo.co.id',
     whatsappNumber: '081288770014',
     employmentType: 'Internal',
     assignedScopes: [
@@ -801,15 +838,16 @@ export const INITIAL_USERS: UserAccountRecord[] = [
   {
     id: 'usr-4',
     employeeCode: 'REC-008',
-    loginAlias: 'rec-dina',
-    fullName: 'Dina Lestari',
-    email: 'dina.lestari@swapro-demo.co.id',
+    loginAlias: 'swa-rama',
+    fullName: 'Rama Wijaya',
+    email: 'swa-rama@swapro-demo.co.id',
     whatsappNumber: '081566550008',
     employmentType: 'Internal',
     assignedScopes: [
       'Pusat Rekrutmen & Pelatihan',
       'Adira Finance — Penempatan Regional',
       'FIFGROUP — Area Jawa Timur',
+      'BAF — Layanan Operasional Cabang',
     ],
     role: 'Rekruter',
     status: 'Aktif',
@@ -831,14 +869,16 @@ export const INITIAL_USERS: UserAccountRecord[] = [
   {
     id: 'usr-6',
     employeeCode: 'NEW-209',
-    fullName: 'Andi Wijaya',
-    email: 'andi.wijaya@swapro-demo.co.id',
+    loginAlias: 'swa-rudi',
+    fullName: 'Rudi Hartono',
+    email: 'swa-rudi@swapro-demo.co.id',
     whatsappNumber: '081290010209',
     employmentType: 'Penempatan Klien',
     assignedScopes: ['Adira Finance — Penempatan Regional'],
     role: 'Karyawan',
     status: 'Menunggu Aktivasi',
     lastActive: 'Belum masuk',
+    portalPassword: '1234',
   },
   {
     id: 'usr-7',
@@ -858,7 +898,7 @@ export const INITIAL_APPROVALS: ApprovalRequestRecord[] = [
   {
     id: 'apr-1',
     title: 'Permintaan Pemenuhan 12 Staff Operasional Lapangan',
-    requester: 'Dina Lestari',
+    requester: 'Rama Wijaya',
     requesterRole: 'Rekruter',
     entityName: 'Adira Finance — Penempatan Regional',
     category: 'Rekrutmen',
@@ -867,8 +907,8 @@ export const INITIAL_APPROVALS: ApprovalRequestRecord[] = [
   },
   {
     id: 'apr-2',
-    title: 'Aktivasi Akun Penempatan Klien — Andi Wijaya',
-    requester: 'Siti Rahmawati',
+    title: 'Aktivasi Akun Penempatan Klien — Rudi Hartono',
+    requester: 'Ulan Rahmawati',
     requesterRole: 'Admin',
     entityName: 'Adira Finance — Penempatan Regional',
     category: 'Akses Akun',
@@ -1299,6 +1339,19 @@ export const INITIAL_CONTRACTS: ContractRecord[] = [
     daysRemaining: null,
     status: 'Aktif',
   },
+  {
+    id: 'ctr-6',
+    contractNumber: 'PKWT-CLN-2026/118',
+    employeeCode: 'NEW-209',
+    employeeName: 'Rudi Hartono',
+    employmentType: 'Penempatan Klien',
+    entityName: 'Adira Finance — Penempatan Regional',
+    contractType: 'PKWT',
+    startDate: '02 Nov 2026',
+    endDate: '01 Mei 2027',
+    daysRemaining: 170,
+    status: 'Aktif',
+  },
 ];
 
 export const INITIAL_AUDIT_LOGS: AuditLogRecord[] = [
@@ -1316,7 +1369,7 @@ export const INITIAL_AUDIT_LOGS: AuditLogRecord[] = [
     actor: 'Fathurrahman (swa-fathur)',
     category: 'RBAC',
     action: 'Menetapkan cakupan multi-klien (Adira Finance & BAF)',
-    target: 'Siti Rahmawati (ADM-014)',
+    target: 'Ulan Rahmawati (ADM-014)',
   },
   {
     id: 'aud-3',
@@ -1549,6 +1602,7 @@ export function filterUsersByQueryAndRole(
       u.fullName.toLowerCase().includes(q) ||
       u.email.toLowerCase().includes(q) ||
       u.employeeCode.toLowerCase().includes(q) ||
+      (u.loginAlias ?? '').toLowerCase().includes(q) ||
       u.assignedScopes.some((scope) => scope.toLowerCase().includes(q));
     return matchesRole && matchesEmployment && matchesQuery;
   });
@@ -2010,8 +2064,10 @@ export const INITIAL_EMPLOYEES: EmployeeRecord[] = [
   {
     id: 'emp-6',
     employeeCode: 'NEW-209',
-    fullName: 'Andi Wijaya',
-    email: 'andi.wijaya@swapro-demo.co.id',
+    loginAlias: 'swa-rudi',
+    portalPassword: '1234',
+    fullName: 'Rudi Hartono',
+    email: 'swa-rudi@swapro-demo.co.id',
     whatsappNumber: '087880110209',
     position: 'Staf Verifikasi Dokumen Klien',
     department: 'Tim Lapangan & Dukungan Klien Adira',
@@ -2086,7 +2142,7 @@ export const INITIAL_EMPLOYEES: EmployeeRecord[] = [
     },
     bankName: 'Bank Mandiri',
     bankAccountNumber: '1640005129801',
-    bankAccountHolder: 'Andi Wijaya',
+    bankAccountHolder: 'Rudi Hartono',
     bankBranch: 'KCP Bintaro Sektor 9',
     documents: {
       cvUploaded: true,
@@ -2099,7 +2155,7 @@ export const INITIAL_EMPLOYEES: EmployeeRecord[] = [
       skckUploaded: false,
       transkripNilaiUploaded: true,
       bankBookUploaded: false,
-      contractUploaded: true,
+      contractUploaded: false,
     },
   },
 ];
@@ -2114,7 +2170,7 @@ export const INITIAL_ONBOARDING_CANDIDATES: OnboardingCandidateRecord[] = [
     position: 'Customer Service & Verifikasi Klien',
     employmentType: 'Penempatan Klien',
     entityName: 'Adira Finance — Penempatan Regional',
-    recruiterName: 'Dina Lestari',
+    recruiterName: 'Rama Wijaya',
     targetJoinDate: '2026-11-18',
     proposedContractType: 'PKWT',
     proposedEndDate: '2027-11-17',
@@ -2130,7 +2186,7 @@ export const INITIAL_ONBOARDING_CANDIDATES: OnboardingCandidateRecord[] = [
     position: 'Petugas Operasional Cabang',
     employmentType: 'Penempatan Klien',
     entityName: 'BAF — Layanan Operasional Cabang',
-    recruiterName: 'Dina Lestari',
+    recruiterName: 'Rama Wijaya',
     targetJoinDate: '2026-11-20',
     proposedContractType: 'PKWT',
     proposedEndDate: '2027-05-19',
@@ -2146,7 +2202,7 @@ export const INITIAL_ONBOARDING_CANDIDATES: OnboardingCandidateRecord[] = [
     position: 'Surveyor Regional Surabaya',
     employmentType: 'Penempatan Klien',
     entityName: 'FIFGROUP — Area Jawa Timur',
-    recruiterName: 'Dina Lestari',
+    recruiterName: 'Rama Wijaya',
     targetJoinDate: '2026-11-25',
     proposedContractType: 'PKWT',
     proposedEndDate: '2027-11-24',
@@ -2162,7 +2218,7 @@ export const INITIAL_ONBOARDING_CANDIDATES: OnboardingCandidateRecord[] = [
     position: 'Staff Tata Kelola Operasional',
     employmentType: 'Internal',
     entityName: 'Kantor Pusat Operasional',
-    recruiterName: 'Dina Lestari',
+    recruiterName: 'Rama Wijaya',
     targetJoinDate: '2026-12-01',
     proposedContractType: 'PKWT',
     proposedEndDate: '2027-11-30',
@@ -3552,4 +3608,97 @@ export function createAuditEntry(
     action,
     target,
   };
+}
+
+export interface SnapshotVacancySlice {
+  id: string;
+  clientName: string;
+  status: string;
+}
+
+export interface SnapshotApplicationSlice {
+  vacancyId: string;
+  stage: string;
+  handedOffToOnboarding?: boolean;
+}
+
+export function buildLiveOperationalSnapshots(input: {
+  entities: EntityRecord[];
+  vacancies: SnapshotVacancySlice[];
+  applications: SnapshotApplicationSlice[];
+  contracts: ContractRecord[];
+  leaveAbsences: LeaveAbsenceRecord[];
+  attendanceLogs: AttendanceLogRecord[];
+  baseSnapshots?: OperationalSnapshot[];
+}): OperationalSnapshot[] {
+  const {
+    entities,
+    vacancies,
+    applications,
+    contracts,
+    leaveAbsences,
+    attendanceLogs,
+    baseSnapshots = INITIAL_OPERATIONAL_SNAPSHOTS,
+  } = input;
+
+  return entities.map((entity) => {
+    const base = baseSnapshots.find(
+      (b) => b.entityName.toLowerCase() === entity.name.toLowerCase()
+    );
+
+    const entityVacancies = vacancies.filter(
+      (v) => v.clientName.trim().toLowerCase() === entity.name.trim().toLowerCase()
+    );
+    const openPositions = entityVacancies.filter(
+      (v) => v.status === 'Aktif' || v.status === 'Mendesak'
+    ).length;
+
+    const entityVacancyIds = new Set(entityVacancies.map((v) => v.id));
+    const activeCandidates = applications.filter(
+      (app) =>
+        entityVacancyIds.has(app.vacancyId) &&
+        !app.handedOffToOnboarding &&
+        app.stage !== 'Tidak Lolos'
+    ).length;
+
+    const expiringContracts = contracts.filter(
+      (c) =>
+        c.entityName.trim().toLowerCase() === entity.name.trim().toLowerCase() &&
+        c.contractType === 'PKWT' &&
+        c.status !== 'Diperpanjang' &&
+        (c.status === 'Segera Berakhir' || (c.daysRemaining !== null && c.daysRemaining <= 30))
+    ).length;
+
+    const onLeaveToday = leaveAbsences.filter(
+      (lv) =>
+        lv.entityName.trim().toLowerCase() === entity.name.trim().toLowerCase() &&
+        lv.type !== 'Alpha / Tanpa Keterangan' &&
+        (lv.status === 'Disetujui' || lv.status === 'Menunggu')
+    ).length;
+
+    const entityLogs = attendanceLogs.filter(
+      (log) => log.entityName.trim().toLowerCase() === entity.name.trim().toLowerCase()
+    );
+    const attendanceRate =
+      entityLogs.length > 0
+        ? `${(
+            (entityLogs.filter((l) => l.status === 'Hadir' || l.status === 'Telat').length /
+              entityLogs.length) *
+            100
+          )
+            .toFixed(1)
+            .replace('.', ',')}%`
+        : base?.attendanceRate ?? '100,0%';
+
+    return {
+      id: base?.id ?? `op-${entity.id}`,
+      entityName: entity.name,
+      category: entity.category,
+      attendanceRate,
+      onLeaveToday,
+      expiringContracts,
+      openPositions,
+      activeCandidates,
+    };
+  });
 }

@@ -18,6 +18,8 @@ import {
 import {
   ActiveLivenessState,
   FACE_MATCH_THRESHOLD_PERCENT,
+  canAutoCompleteAttendance,
+  canAutoCompleteEnrollment,
   computeFaceDescriptorSimilarity,
   computeHeadYawRatio,
   createInitialLivenessState,
@@ -25,7 +27,11 @@ import {
   extractGeometricFaceDescriptor,
   summarizeAttendanceGates,
 } from '../../utils/faceVerification';
-import { extractMaxBlinkScore, getBrowserFaceLandmarker } from '../../utils/faceLandmarkerClient';
+import {
+  extractMaxBlinkScore,
+  getBrowserFaceLandmarker,
+  switchToCpuFaceLandmarker,
+} from '../../utils/faceLandmarkerClient';
 
 interface FaceAttendanceCameraModalProps {
   mode: 'enroll' | 'checkin' | 'checkout';
@@ -57,6 +63,8 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
+  const lastDetectMsRef = useRef<number>(0);
+  const autoSubmittedRef = useRef<boolean>(false);
 
   const isEnrollMode = mode === 'enroll';
   const isEnrolled = Boolean(employee.faceBiometric?.enrolled && employee.faceBiometric.descriptor?.length);
@@ -64,6 +72,7 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
   const [cameraStatus, setCameraStatus] = useState<'initializing' | 'ready' | 'error'>('initializing');
   const [cameraError, setCameraError] = useState<string>('');
   const [modelReady, setModelReady] = useState<boolean>(false);
+  const [modelError, setModelError] = useState<string>('');
   const [liveFaceCount, setLiveFaceCount] = useState<number>(0);
   const [liveDescriptor, setLiveDescriptor] = useState<number[]>([]);
   const [enrollBlinkDone, setEnrollBlinkDone] = useState<boolean>(false);
@@ -73,6 +82,7 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
   );
   const [capturedSnapshot, setCapturedSnapshot] = useState<string>('');
   const [submitError, setSubmitError] = useState<string>('');
+  const [autoCompleting, setAutoCompleting] = useState<boolean>(false);
   const [cameraRestartNonce, setCameraRestartNonce] = useState<number>(0);
 
   const scopedActiveLocations = useMemo(() => {
@@ -139,47 +149,104 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
       setCameraStatus('initializing');
       setCameraError('');
       setModelReady(false);
+      setModelError('');
+      lastVideoTimeRef.current = -1;
 
       if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
         setCameraStatus('error');
         setCameraError(
-          'Peramban Anda tidak mendukung akses kamera langsung (getUserMedia). Gunakan browser modern dengan webcam aktif.'
+          'Peramban Anda tidak mendukung akses kamera langsung (getUserMedia). Gunakan browser modern atau buka lewat Chrome/Edge.'
         );
         return;
       }
 
+      let stream: MediaStream;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-          audio: false,
-        });
-
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+          });
+        } catch (primaryErr) {
+          const errName = primaryErr instanceof Error ? primaryErr.name : '';
+          if (errName === 'OverconstrainedError' || errName === 'ConstraintNotSatisfiedError') {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: false,
+            });
+          } else {
+            throw primaryErr;
+          }
         }
-
-        streamRef.current = stream;
-        const videoEl = videoRef.current;
-        if (videoEl) {
-          videoEl.srcObject = stream;
-          await videoEl.play().catch(() => undefined);
-        }
-        setCameraStatus('ready');
-
-        const landmarker = await getBrowserFaceLandmarker();
+      } catch (camErr) {
         if (cancelled) return;
-        setModelReady(true);
+        setCameraStatus('error');
+        const errName = camErr instanceof Error ? camErr.name : '';
+        const errMsg = camErr instanceof Error ? camErr.message.toLowerCase() : '';
+        if (
+          errName === 'NotAllowedError' ||
+          errName === 'PermissionDeniedError' ||
+          errName === 'SecurityError' ||
+          errMsg.includes('permission') ||
+          errMsg.includes('denied')
+        ) {
+          setCameraError(
+            'Izin kamera ditolak oleh browser/iframe. Klik ikon kamera di address bar untuk mengizinkan akses webcam, lalu klik Coba Hubungkan Kamera Ulang.'
+          );
+        } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
+          setCameraError(
+            'Perangkat kamera/webcam tidak ditemukan pada perangkat ini. Pastikan webcam terhubung lalu coba hubungkan ulang.'
+          );
+        } else {
+          setCameraError(
+            'Kamera sedang dipakai aplikasi lain atau gagal diinisialisasi. Tutup aplikasi kamera lain lalu klik Coba Hubungkan Kamera Ulang.'
+          );
+        }
+        return;
+      }
 
-        const processFrame = () => {
-          if (cancelled) return;
-          const v = videoRef.current;
-          const overlay = overlayCanvasRef.current;
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
 
-          if (v && v.readyState >= 2 && v.videoWidth > 0 && v.currentTime !== lastVideoTimeRef.current) {
-            lastVideoTimeRef.current = v.currentTime;
-            const nowMs = performance.now();
+      streamRef.current = stream;
+      const videoEl = videoRef.current;
+      if (videoEl) {
+        videoEl.srcObject = stream;
+        await videoEl.play().catch(() => undefined);
+      }
+      setCameraStatus('ready');
+
+      let landmarker: Awaited<ReturnType<typeof getBrowserFaceLandmarker>>;
+      try {
+        landmarker = await getBrowserFaceLandmarker();
+      } catch {
+        if (cancelled) return;
+        setModelError(
+          'Kamera sudah aktif, namun model deteksi wajah 3D gagal dimuat. Klik Coba Hubungkan Kamera Ulang atau periksa koneksi perangkat.'
+        );
+        return;
+      }
+      if (cancelled) return;
+      setModelReady(true);
+
+      let consecutiveDetectErrors = 0;
+      let cpuFallbackUsed = false;
+
+      const processFrame = () => {
+        if (cancelled) return;
+        const v = videoRef.current;
+        const overlay = overlayCanvasRef.current;
+
+        if (v && v.readyState >= 2 && v.videoWidth > 0 && v.currentTime !== lastVideoTimeRef.current) {
+          lastVideoTimeRef.current = v.currentTime;
+          const nowMs = Math.max(lastDetectMsRef.current + 1, Math.round(performance.now()));
+          lastDetectMsRef.current = nowMs;
+
+          try {
             const result = landmarker.detectForVideo(v, nowMs);
+            consecutiveDetectErrors = 0;
             const faceCount = result.faceLandmarks?.length ?? 0;
             setLiveFaceCount(faceCount);
 
@@ -264,26 +331,32 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
               );
               setLivenessState(nextState);
             }
+          } catch {
+            consecutiveDetectErrors += 1;
+            if (consecutiveDetectErrors >= 3 && !cpuFallbackUsed) {
+              cpuFallbackUsed = true;
+              switchToCpuFaceLandmarker()
+                .then((cpuLm) => {
+                  if (!cancelled) {
+                    landmarker = cpuLm;
+                    consecutiveDetectErrors = 0;
+                  }
+                })
+                .catch(() => {
+                  if (!cancelled) {
+                    setModelError(
+                      'Deteksi wajah 3D mengalami kendala pada GPU perangkat ini. Klik Muat Ulang untuk mencoba lagi.'
+                    );
+                  }
+                });
+            }
           }
-
-          rafRef.current = requestAnimationFrame(processFrame);
-        };
+        }
 
         rafRef.current = requestAnimationFrame(processFrame);
-      } catch (err) {
-        if (cancelled) return;
-        setCameraStatus('error');
-        const message = err instanceof Error ? err.message : '';
-        if (message.toLowerCase().includes('permission') || message.toLowerCase().includes('denied')) {
-          setCameraError(
-            'Izin kamera ditolak oleh browser. Aktifkan izin webcam agar sistem dapat melakukan verifikasi wajah live.'
-          );
-        } else {
-          setCameraError(
-            'Perangkat webcam tidak terdeteksi atau sedang dipakai aplikasi lain. Hubungkan kamera untuk melanjutkan.'
-          );
-        }
-      }
+      };
+
+      rafRef.current = requestAnimationFrame(processFrame);
     };
 
     startPipeline();
@@ -303,35 +376,87 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
     enrollBlinkDone &&
     liveDescriptor.length > 0;
 
-  const canSubmitAttendance = !isEnrollMode && gates.allGatesPassed && Boolean(capturedSnapshot);
+  const canSubmitAttendance = !isEnrollMode && gates.allGatesPassed;
 
   const handleConfirmEnroll = () => {
     if (!canSubmitEnroll) return;
-    const finalSnapshot = capturedSnapshot || takeCompressedSelfie();
+    autoSubmittedRef.current = true;
+    const finalSnapshot = capturedSnapshotRef.current || takeCompressedSelfie();
     onCompleteEnrollment(liveDescriptor, finalSnapshot);
   };
 
   const handleConfirmAttendance = () => {
     if (!canSubmitAttendance) return;
+    autoSubmittedRef.current = true;
     setSubmitError('');
     const result = onCompleteAttendance({
       locationUsed: selectedLocation,
       notes: attendanceNotes,
       faceMatchScore: livenessState.lastMatchScore ?? FACE_MATCH_THRESHOLD_PERCENT,
-      selfieSnapshot: capturedSnapshot || takeCompressedSelfie(),
+      selfieSnapshot: capturedSnapshotRef.current || takeCompressedSelfie(),
     });
     if (!result.ok) {
       setSubmitError(result.message);
+      setAutoCompleting(false);
     }
   };
 
   const handleRetryVerification = () => {
+    autoSubmittedRef.current = false;
+    setAutoCompleting(false);
     setSubmitError('');
     setCapturedSnapshot('');
     setEnrollBlinkDone(false);
     setEnrollBlinkClosing(false);
     setLivenessState(createInitialLivenessState(isEnrollMode ? true : isEnrolled));
   };
+
+  // Automatic hands-free enrollment & automatic Clock-In/Out once all required gates pass
+  const readyAutoEnroll =
+    isEnrollMode &&
+    canAutoCompleteEnrollment({
+      cameraReady: cameraStatus === 'ready',
+      modelReady,
+      liveFaceCount,
+      blinkDone: enrollBlinkDone,
+      descriptorLength: liveDescriptor.length,
+      alreadyTriggered: autoSubmittedRef.current,
+      hasError: Boolean(cameraError || modelError || submitError),
+    });
+
+  const readyAutoAttendance =
+    !isEnrollMode &&
+    canAutoCompleteAttendance({
+      cameraReady: cameraStatus === 'ready',
+      modelReady,
+      isEnrolled,
+      livenessState,
+      liveFaceCount,
+      alreadyTriggered: autoSubmittedRef.current,
+      hasError: Boolean(cameraError || modelError || submitError),
+    });
+
+  const handleConfirmEnrollRef = useRef(handleConfirmEnroll);
+  handleConfirmEnrollRef.current = handleConfirmEnroll;
+  const handleConfirmAttendanceRef = useRef(handleConfirmAttendance);
+  handleConfirmAttendanceRef.current = handleConfirmAttendance;
+
+  useEffect(() => {
+    if (!readyAutoEnroll && !readyAutoAttendance) return;
+    setAutoCompleting(true);
+    const timer = window.setTimeout(() => {
+      if (autoSubmittedRef.current) return;
+      if (readyAutoEnroll) {
+        handleConfirmEnrollRef.current();
+      } else if (readyAutoAttendance) {
+        handleConfirmAttendanceRef.current();
+      }
+    }, 650);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [readyAutoEnroll, readyAutoAttendance]);
 
   const titleLabel = isEnrollMode
     ? 'Registrasi Biometrik Wajah Karyawan'
@@ -377,10 +502,11 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
             <div className="relative bg-[#0B1736] border border-[#E2E8F0] rounded-[6px] overflow-hidden aspect-[4/3] flex items-center justify-center">
               <video
                 ref={videoRef}
+                autoPlay
                 playsInline
                 muted
-                className={`w-full h-full object-cover scale-x-[-1] ${
-                  cameraStatus === 'ready' ? 'block' : 'hidden'
+                className={`w-full h-full object-cover scale-x-[-1] transition-opacity duration-200 ${
+                  cameraStatus === 'ready' ? 'opacity-100' : 'opacity-0 pointer-events-none'
                 }`}
               />
               <canvas
@@ -390,7 +516,7 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
               <canvas ref={captureCanvasRef} className="hidden" />
 
               {cameraStatus === 'initializing' && (
-                <div className="p-6 text-center text-white space-y-2">
+                <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-white space-y-2 bg-[#0B1736]">
                   <Camera className="w-8 h-8 mx-auto text-[#1468E8]" aria-hidden="true" />
                   <p className="text-sm font-bold">Mengaktifkan Kamera Langsung...</p>
                   <p className="text-xs text-[#EAF2FF]/75">
@@ -400,7 +526,8 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
               )}
 
               {cameraStatus === 'error' && (
-                <div className="p-6 text-center text-white space-y-3 max-w-sm">
+                <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-white space-y-3 bg-[#0B1736]">
+                  <div className="max-w-sm space-y-3">
                   <ShieldAlert className="w-9 h-9 mx-auto text-[#FF7A1A]" aria-hidden="true" />
                   <p className="text-sm font-bold">Kamera Live Wajib Aktif</p>
                   <p className="text-xs text-[#EAF2FF]/85 leading-relaxed">{cameraError}</p>
@@ -415,12 +542,26 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
                     <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
                     <span>Coba Hubungkan Kamera Ulang</span>
                   </button>
+                  </div>
                 </div>
               )}
 
-              {cameraStatus === 'ready' && !modelReady && (
+              {cameraStatus === 'ready' && !modelReady && !modelError && (
                 <div className="absolute bottom-3 left-3 right-3 px-3 py-2 bg-[#102B69]/90 border border-white/20 rounded-[4px] text-xs text-white font-semibold">
                   Memuat model deteksi landmark wajah 3D...
+                </div>
+              )}
+
+              {cameraStatus === 'ready' && modelError && (
+                <div className="absolute bottom-3 left-3 right-3 px-3 py-2.5 bg-[#7F1D1D]/95 border border-[#FCA5A5]/40 rounded-[4px] text-xs text-white flex items-center justify-between gap-3">
+                  <span className="font-medium">{modelError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCameraRestartNonce((n) => n + 1)}
+                    className="px-2.5 py-1 bg-white text-[#7F1D1D] font-bold rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Muat Ulang
+                  </button>
                 </div>
               )}
             </div>
@@ -432,7 +573,7 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
               className={`p-3.5 rounded-[4px] border text-xs font-semibold flex items-start gap-2.5 ${
                 (isEnrollMode && canSubmitEnroll) || (!isEnrollMode && gates.allGatesPassed)
                   ? 'bg-[#F0FDF4] border-[#BBF7D0] text-[#16A36A]'
-                  : livenessState.phase === 'rejected_mismatch' || cameraStatus === 'error'
+                  : livenessState.phase === 'rejected_mismatch' || cameraStatus === 'error' || Boolean(modelError)
                     ? 'bg-[#FEF2F2] border-[#FECACA] text-[#DC3545]'
                     : 'bg-[#EAF2FF] border-[#C9DDFB] text-[#102B69]'
               }`}
@@ -443,13 +584,19 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
               )}
               <span>
-                {isEnrollMode
-                  ? enrollBlinkDone
-                    ? 'Liveness & wajah depan terverifikasi! Klik Simpan Biometrik Wajah.'
-                    : enrollBlinkClosing
-                      ? 'Kedipan terdeteksi, buka mata kembali menghadap depan...'
-                      : 'Hadapkan wajah ke kamera lalu KEDIPKAN MATA 1x untuk menyimpan biometrik asli.'
-                  : livenessState.statusMessage}
+                {cameraStatus === 'error'
+                  ? cameraError
+                  : modelError
+                    ? modelError
+                    : isEnrollMode
+                      ? enrollBlinkDone
+                        ? 'Liveness & wajah depan terverifikasi! Menyimpan biometrik otomatis...'
+                        : enrollBlinkClosing
+                          ? 'Kedipan terdeteksi, buka mata kembali menghadap depan...'
+                          : 'Hadapkan wajah ke kamera lalu KEDIPKAN MATA 1x — sistem akan registrasi otomatis.'
+                      : gates.allGatesPassed
+                        ? `Identitas terverifikasi (${livenessState.lastMatchScore ?? FACE_MATCH_THRESHOLD_PERCENT}% cocok)! Mencatat ${mode === 'checkin' ? 'Clock-In' : 'Clock-Out'} otomatis...`
+                        : livenessState.statusMessage}
               </span>
             </div>
           </div>
@@ -462,28 +609,42 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
                   <h3 className="text-xs font-bold text-[#102B69]">
                     Tahapan Registrasi Wajah Asli
                   </h3>
-                  <div className="flex items-center justify-between py-1 border-b border-[#E2E8F0]">
+                  <div className="flex items-center justify-between gap-2 py-1 border-b border-[#E2E8F0]">
                     <span className="text-[#64748B]">1. Kamera Live &amp; Model 3D</span>
-                    <span className={modelReady ? 'font-bold text-[#16A36A]' : 'font-semibold text-[#B87D00]'}>
-                      {modelReady ? 'Aktif' : 'Memuat'}
+                    <span
+                      className={`whitespace-nowrap shrink-0 ${
+                        cameraStatus === 'error' || modelError
+                          ? 'font-bold text-[#DC3545]'
+                          : cameraStatus === 'ready' && modelReady
+                            ? 'font-bold text-[#16A36A]'
+                            : 'font-semibold text-[#B87D00]'
+                      }`}
+                    >
+                      {cameraStatus === 'error'
+                        ? 'Kamera Gagal'
+                        : modelError
+                          ? 'Model Gagal'
+                          : cameraStatus === 'ready' && modelReady
+                            ? 'Aktif'
+                            : 'Memuat'}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between py-1 border-b border-[#E2E8F0]">
+                  <div className="flex items-center justify-between gap-2 py-1 border-b border-[#E2E8F0]">
                     <span className="text-[#64748B]">2. Tepat 1 Wajah di Kamera</span>
                     <span
-                      className={
+                      className={`whitespace-nowrap shrink-0 ${
                         liveFaceCount === 1 ? 'font-bold text-[#16A36A]' : 'font-semibold text-[#B87D00]'
-                      }
+                      }`}
                     >
                       {liveFaceCount === 1 ? '1 Wajah Valid' : `${liveFaceCount} Wajah`}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between py-1">
+                  <div className="flex items-center justify-between gap-2 py-1">
                     <span className="text-[#64748B]">3. Kedipan Mata (Anti-Foto)</span>
                     <span
-                      className={
+                      className={`whitespace-nowrap shrink-0 ${
                         enrollBlinkDone ? 'font-bold text-[#16A36A]' : 'font-semibold text-[#B87D00]'
-                      }
+                      }`}
                     >
                       {enrollBlinkDone ? 'Selesai' : 'Menunggu Kedipan'}
                     </span>
@@ -497,36 +658,36 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
                       4 Gerbang Anti-Spoof Presensi
                     </h3>
                   </div>
-                  <div className="flex items-center justify-between py-1 border-b border-[#E2E8F0]">
+                  <div className="flex items-center justify-between gap-2 py-1 border-b border-[#E2E8F0]">
                     <span className="text-[#64748B]">Gate 1 · Biometrik Terdaftar</span>
                     <span
-                      className={
+                      className={`whitespace-nowrap shrink-0 ${
                         gates.gate1Enrolled ? 'font-bold text-[#16A36A]' : 'font-bold text-[#DC3545]'
-                      }
+                      }`}
                     >
                       {gates.gate1Enrolled ? 'Terdaftar' : 'Belum'}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between py-1 border-b border-[#E2E8F0]">
+                  <div className="flex items-center justify-between gap-2 py-1 border-b border-[#E2E8F0]">
                     <span className="text-[#64748B]">Gate 2 · 1 Wajah Live</span>
                     <span
-                      className={
+                      className={`whitespace-nowrap shrink-0 ${
                         gates.gate2SingleLiveFace
                           ? 'font-bold text-[#16A36A]'
                           : 'font-semibold text-[#B87D00]'
-                      }
+                      }`}
                     >
                       {gates.gate2SingleLiveFace ? 'Valid' : `${liveFaceCount} Terdeteksi`}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between py-1 border-b border-[#E2E8F0]">
+                  <div className="flex items-center justify-between gap-2 py-1 border-b border-[#E2E8F0]">
                     <span className="text-[#64748B]">Gate 3 · Kedip &amp; Toleh 3D</span>
                     <span
-                      className={
+                      className={`whitespace-nowrap shrink-0 ${
                         gates.gate3LivenessPassed
                           ? 'font-bold text-[#16A36A]'
                           : 'font-semibold text-[#B87D00]'
-                      }
+                      }`}
                     >
                       {gates.gate3LivenessPassed
                         ? 'Lolos'
@@ -582,14 +743,21 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
                     <select
                       id="attendanceLocationSelect"
                       value={selectedLocation}
-                      onChange={(e) => setSelectedLocation(e.target.value)}
+                      onChange={(e) => {
+                        setSelectedLocation(e.target.value);
+                        setSubmitError('');
+                      }}
                       className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] text-[#102B69] font-medium"
                     >
-                      {scopedActiveLocations.map((loc) => (
-                        <option key={loc.id} value={loc.name}>
-                          {loc.name} ({loc.radiusMeters}m · {loc.mode})
-                        </option>
-                      ))}
+                      {scopedActiveLocations.length === 0 ? (
+                        <option value={selectedLocation}>{selectedLocation}</option>
+                      ) : (
+                        scopedActiveLocations.map((loc) => (
+                          <option key={loc.id} value={loc.name}>
+                            {loc.name} ({loc.radiusMeters}m · {loc.mode})
+                          </option>
+                        ))
+                      )}
                     </select>
                   </div>
 
@@ -627,7 +795,9 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
                   onClick={handleConfirmEnroll}
                   className="w-full px-4 py-2.5 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] disabled:bg-[#94A3B8] disabled:cursor-not-allowed rounded-[4px] cursor-pointer transition-colors"
                 >
-                  Simpan Biometrik Wajah
+                  {autoCompleting && canSubmitEnroll
+                    ? 'Menyimpan Biometrik Otomatis...'
+                    : 'Simpan Biometrik Wajah'}
                 </button>
               ) : (
                 <button
@@ -636,7 +806,13 @@ export const FaceAttendanceCameraModal: React.FC<FaceAttendanceCameraModalProps>
                   onClick={handleConfirmAttendance}
                   className="w-full px-4 py-2.5 text-xs font-semibold text-white bg-[#16A36A] hover:bg-[#128557] disabled:bg-[#94A3B8] disabled:cursor-not-allowed rounded-[4px] cursor-pointer transition-colors"
                 >
-                  {mode === 'checkin' ? 'Catat Clock-In Terverifikasi' : 'Catat Clock-Out Terverifikasi'}
+                  {autoCompleting && canSubmitAttendance
+                    ? mode === 'checkin'
+                      ? 'Mencatat Clock-In Otomatis...'
+                      : 'Mencatat Clock-Out Otomatis...'
+                    : mode === 'checkin'
+                      ? 'Catat Clock-In Terverifikasi'
+                      : 'Catat Clock-Out Terverifikasi'}
                 </button>
               )}
 

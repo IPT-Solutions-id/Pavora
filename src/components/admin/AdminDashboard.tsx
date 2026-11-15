@@ -106,7 +106,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
   const pendingLeaveCount = scopedLeaveAbsences.filter((l) => l.status === 'Menunggu').length;
   const scopedNotifications = store.notifications.filter(
     (n) =>
-      n.recipientRole !== 'employee' &&
+      (n.recipientRole === 'admin' || !n.recipientRole) &&
       (!n.entityName || effectiveScopes.includes(n.entityName))
   );
 
@@ -292,8 +292,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
               notifications={scopedNotifications}
               onSelectNotification={(notif) => {
                 store.markNotificationRead(notif.id);
-                if (notif.type === 'leave-submitted' || notif.targetMenu === 'monitoring') {
+                if (
+                  notif.type === 'leave-submitted' ||
+                  notif.type === 'alpha-clarified' ||
+                  notif.targetMenu === 'monitoring'
+                ) {
                   selectMenu('admin-leave');
+                } else if (notif.targetMenu === 'admin-onboarding') {
+                  selectMenu('admin-onboarding');
                 } else {
                   selectMenu('admin-employees');
                   if (notif.employeeCode) {
@@ -344,6 +350,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
               entities={store.entities}
               departments={store.departments}
               assignedScopes={effectiveScopes}
+              settings={store.settings}
               onUpdateEmployee={(id, data) => store.updateEmployee(id, data, actorLabel)}
               onResetFaceBiometric={(emp) => store.resetEmployeeFace(emp.id, actorLabel)}
               onMarkReviewed={(emp) => store.markEmployeeReviewed(emp.id)}
@@ -386,6 +393,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
               entities={store.entities}
               departments={store.departments}
               assignedScopes={effectiveScopes}
+              settings={store.settings}
               onSubmitCandidateOnboarding={(candId, data) =>
                 store.submitCandidateOnboarding(candId, data, user.name, actorLabel)
               }
@@ -441,6 +449,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
 
       {pkwtTarget && (
         <PkwtDocumentModal
+          settings={store.settings}
           contract={
             scopedContracts.find((c) => c.employeeCode === pkwtTarget.employee.employeeCode) ?? {
               id: `ctr-${pkwtTarget.employee.id}`,

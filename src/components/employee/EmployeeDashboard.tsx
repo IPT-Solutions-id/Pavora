@@ -46,8 +46,15 @@ import {
   resolveEmployeeWorkSchedule,
 } from '../../data/masterAdminData';
 import { formatRupiahDot } from '../../utils/pkwtDocument';
+import {
+  canSignContractHistoryItem,
+  isContractSignedLocked,
+  resolveEmployeeContractSequenceLabel,
+  resolveLatestContractSignatureStatus,
+} from '../../utils/pkwtLifecycle';
 import { isValidMapsUrl } from '../../utils/mapsUrl';
 import { PkwtDocumentModal } from '../dashboard/PkwtDocumentModal';
+import { BpjsCardsSection } from '../shared/BpjsCardsSection';
 import { DigitalSignaturePad } from '../shared/DigitalSignaturePad';
 import { NotificationBellMenu } from '../shared/NotificationBellMenu';
 import { FaceAttendanceCameraModal } from './FaceAttendanceCameraModal';
@@ -57,6 +64,7 @@ export type EmployeeMenuId =
   | 'emp-attendance'
   | 'emp-leave'
   | 'emp-contract'
+  | 'emp-signature'
   | 'emp-profile';
 
 interface EmployeeDashboardProps {
@@ -76,6 +84,7 @@ const EMPLOYEE_MENU_ITEMS: EmployeeNavItem[] = [
   { id: 'emp-attendance', label: 'Presensi', icon: ScanFace },
   { id: 'emp-leave', label: 'Cuti & Izin', icon: CalendarCheck2 },
   { id: 'emp-contract', label: 'Kontrak & Slip', icon: Wallet },
+  { id: 'emp-signature', label: 'Menu TTD', icon: PenTool },
   { id: 'emp-profile', label: 'Profil & Berkas', icon: IdCard },
 ];
 
@@ -110,6 +119,9 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
   const [pkwtSignatureDataUrl, setPkwtSignatureDataUrl] = useState('');
   const [pkwtConsentChecked, setPkwtConsentChecked] = useState(false);
   const [pkwtSignFeedback, setPkwtSignFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [savedSigDraft, setSavedSigDraft] = useState('');
+  const [savedSigFeedback, setSavedSigFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [signSourceMode, setSignSourceMode] = useState<'saved' | 'draw'>('saved');
 
   // Leave request form state
   const [leaveType, setLeaveType] = useState<'Cuti Tahunan' | 'Izin Sakit' | 'Izin Keperluan'>(
@@ -255,6 +267,14 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
     () => contractHistory.find((h) => h.signatureStatus === 'Menunggu TTD Karyawan') ?? null,
     [contractHistory]
   );
+  const contractSequenceLabel = useMemo(
+    () => resolveEmployeeContractSequenceLabel(employee),
+    [employee]
+  );
+  const latestContractTtdStatus = useMemo(
+    () => resolveLatestContractSignatureStatus(employee),
+    [employee]
+  );
   const workSchedule = resolveEmployeeWorkSchedule(
     employee.entityName,
     store.policy,
@@ -276,27 +296,41 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
     setMobileSidebarOpen(false);
     setActionFeedback(null);
     setPkwtSignFeedback(null);
+    setSavedSigFeedback(null);
+  };
+
+  const handleSaveSignatureSpecimen = (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = store.saveEmployeeSignatureSpecimen(employee.id, savedSigDraft, actorLabel);
+    setSavedSigFeedback({ ok: res.ok, text: res.message });
+    if (res.ok) {
+      setSignSourceMode('saved');
+    }
   };
 
   const handleSignPkwtSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pkwtSignatureDataUrl) {
+    const effectiveSignature =
+      signSourceMode === 'saved' && employee.savedSignatureDataUrl
+        ? employee.savedSignatureDataUrl
+        : pkwtSignatureDataUrl;
+    if (!effectiveSignature) {
       setPkwtSignFeedback({
         ok: false,
-        text: 'Silakan goreskan tanda tangan digital Anda pada kanvas terlebih dahulu.',
+        text: 'Silakan simpan tanda tangan di Menu TTD atau goreskan TTD pada kanvas terlebih dahulu.',
       });
       return;
     }
     if (!pkwtConsentChecked) {
       setPkwtSignFeedback({
         ok: false,
-        text: 'Centang pernyataan persetujuan syarat & ketentuan PKWT sebelum menandatangani.',
+        text: 'Centang pernyataan persetujuan syarat & ketentuan PKWT setelah membaca isinya.',
       });
       return;
     }
     const res = store.signEmployeePkwtDigitally(
       employee.id,
-      pkwtSignatureDataUrl,
+      effectiveSignature,
       actorLabel,
       pendingUnsignedContract?.contractNumber
     );
@@ -543,9 +577,11 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
               {item.id === 'emp-attendance' && !isFaceEnrolled && (
                 <span className="text-[10px] font-bold text-[#FF7A1A] shrink-0">Wajib Daftar</span>
               )}
-              {item.id === 'emp-contract' && pendingUnsignedContract && (
-                <span className="text-[10px] font-bold text-[#FF7A1A] shrink-0">TTD PKWT</span>
-              )}
+              {item.id === 'emp-signature' &&
+                (pendingUnsignedContract ||
+                  (employee.contractType === 'PKWT' && contractHistory.length === 0)) && (
+                  <span className="text-[10px] font-bold text-[#FF7A1A] shrink-0">TTD PKWT</span>
+                )}
             </button>
           );
         })}
@@ -620,7 +656,9 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
               notifications={myNotifications}
               onSelectNotification={(notif) => {
                 store.markNotificationRead(notif.id);
-                if (notif.targetMenu === 'emp-contract') {
+                if (notif.targetMenu === 'emp-signature') {
+                  selectMenu('emp-signature');
+                } else if (notif.targetMenu === 'emp-contract') {
                   selectMenu('emp-contract');
                 } else {
                   selectMenu('emp-leave');
@@ -729,7 +767,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                       (Toleransi {workSchedule.lateToleranceMinutes} mnt · {workSchedule.workDays})
                     </span>
                     <span>
-                      Kontrak {employee.contractType}:{' '}
+                      Kontrak ({contractSequenceLabel}):{' '}
                       <strong className="text-white">
                         {employee.contractType === 'PKWTT'
                           ? 'Karyawan Tetap'
@@ -800,35 +838,6 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                 </div>
               </section>
 
-              {/* Pending Digital PKWT Signature Reminder */}
-              {pendingUnsignedContract && (
-                <div
-                  role="alert"
-                  data-testid="emp-pending-pkwt-alert"
-                  className="bg-[#EAF2FF] border border-[#1468E8]/40 rounded-[6px] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                >
-                  <div className="flex items-start gap-3">
-                    <PenTool className="w-5 h-5 text-[#1468E8] shrink-0 mt-0.5" aria-hidden="true" />
-                    <div>
-                      <p className="text-sm font-bold text-[#102B69]">
-                        {pendingUnsignedContract.sequenceLabel} Menunggu Tanda Tangan Digital Anda
-                      </p>
-                      <p className="text-xs text-[#64748B] mt-0.5">
-                        Dokumen kontrak {pendingUnsignedContract.contractNumber} ({formatIndonesianDate(pendingUnsignedContract.startDate)} –{' '}
-                        {pendingUnsignedContract.endDate ? formatIndonesianDate(pendingUnsignedContract.endDate) : 'Tetap'}) telah siap. Silakan baca dan tanda tangani secara digital di menu Kontrak &amp; Slip.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => selectMenu('emp-contract')}
-                    className="px-4 py-2 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    Baca &amp; Tandatangani PKWT
-                  </button>
-                </div>
-              )}
-
               {/* Mandatory Face Biometric Reminder if unenrolled */}
               {!isFaceEnrolled && (
                 <div
@@ -854,6 +863,46 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                     className="px-4 py-2 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     Daftar Wajah Sekarang
+                  </button>
+                </div>
+              )}
+
+              {/* Pending Digital PKWT Signature Reminder (Single Callout -> Menu TTD) */}
+              {(pendingUnsignedContract ||
+                (employee.contractType === 'PKWT' && contractHistory.length === 0)) && (
+                <div
+                  role="alert"
+                  data-testid="emp-pending-pkwt-alert"
+                  className="bg-[#EAF2FF] border border-[#1468E8]/40 rounded-[6px] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div className="flex items-start gap-3">
+                    <PenTool className="w-5 h-5 text-[#1468E8] shrink-0 mt-0.5" aria-hidden="true" />
+                    <div>
+                      <p className="text-sm font-bold text-[#102B69]">
+                        {pendingUnsignedContract?.sequenceLabel ?? 'PKWT Ke-1'} (
+                        {pendingUnsignedContract?.contractNumber ?? myContract.contractNumber}) Menunggu TTD Anda
+                      </p>
+                      <p className="text-xs text-[#64748B] mt-0.5">
+                        Periode{' '}
+                        {formatIndonesianDate(
+                          pendingUnsignedContract?.startDate ?? employee.joinDate
+                        )}{' '}
+                        –{' '}
+                        {pendingUnsignedContract?.endDate || employee.contractEndDate
+                          ? formatIndonesianDate(
+                              pendingUnsignedContract?.endDate ?? employee.contractEndDate
+                            )
+                          : 'Tetap'}
+                        . Silakan tinjau &amp; baca isi kontrak kerja terlebih dahulu di Menu TTD sebelum menyetujui &amp; membubuhkan tanda tangan digital.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => selectMenu('emp-signature')}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Buka Menu TTD
                   </button>
                 </div>
               )}
@@ -1682,13 +1731,13 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
           {/* =============================================================== */}
           {activeMenu === 'emp-contract' && (
             <div className="space-y-6">
+              {/* Contract Summary & PDF */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Contract Summary & PDF */}
                 <section className="lg:col-span-6 bg-white border border-[#E2E8F0] rounded-[6px] p-6 space-y-5">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="text-xs font-semibold text-[#1468E8]">
-                        Dokumen Perjanjian Kerja Resmi · NIK {employee.employeeCode}
+                        Dokumen Perjanjian Kerja Resmi · {contractSequenceLabel} · NIK {employee.employeeCode}
                       </p>
                       <h2 className="text-base font-bold text-[#102B69] mt-0.5">
                         {myContract.contractType} · {myContract.contractNumber}
@@ -1702,7 +1751,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                             : 'text-[#16A36A] bg-[#ECFDF5] border-[#A7F3D0]'
                         }`}
                       >
-                        {pendingUnsignedContract ? 'Menunggu TTD Digital' : myContract.status}
+                        {pendingUnsignedContract ? 'Menunggu TTD Karyawan' : latestContractTtdStatus}
                       </span>
                       {eocIndicator.isExpiring && (
                         <span
@@ -1726,6 +1775,12 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                       </dd>
                     </div>
                     <div>
+                      <dt className="text-[#64748B]">Tahap Kontrak &amp; Status Arsip</dt>
+                      <dd className="font-bold text-[#102B69] mt-0.5">
+                        {contractSequenceLabel} · {latestContractTtdStatus}
+                      </dd>
+                    </div>
+                    <div>
                       <dt className="text-[#64748B]">Jabatan &amp; Penempatan</dt>
                       <dd className="font-semibold text-[#172033] mt-0.5">
                         <p>
@@ -1737,28 +1792,12 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                             {employee.placementArea ? ` (${employee.placementArea})` : ''}
                           </p>
                         )}
-                        {employee.placementMapsUrl && isValidMapsUrl(employee.placementMapsUrl) && (
-                          <a
-                            href={employee.placementMapsUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#1468E8] hover:underline mt-0.5"
-                          >
-                            <MapPin className="w-3 h-3" aria-hidden="true" />
-                            <span>Buka Google Maps</span>
-                          </a>
-                        )}
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-[#64748B]">Tanggal Mulai (Join)</dt>
-                      <dd className="font-bold text-[#172033] tabular-nums mt-0.5">
-                        {formatIndonesianDate(employee.joinDate)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-[#64748B]">Berakhirnya Kontrak (EOC)</dt>
+                      <dt className="text-[#64748B]">Tanggal Mulai (Join) &amp; EOC</dt>
                       <dd className="font-bold text-[#102B69] tabular-nums mt-0.5">
+                        {formatIndonesianDate(employee.joinDate)} →{' '}
                         {employee.contractType === 'PKWTT'
                           ? 'Karyawan Tetap (PKWTT)'
                           : formatIndonesianDate(employee.contractEndDate)}
@@ -1767,14 +1806,26 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                   </dl>
 
                   {employee.contractType === 'PKWT' && (
-                    <button
-                      type="button"
-                      onClick={() => setPkwtPreviewTarget('active')}
-                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] cursor-pointer transition-colors"
-                    >
-                      <FileText className="w-4 h-4" aria-hidden="true" />
-                      <span>Lihat &amp; Unduh Dokumen PDF PKWT Resmi (4 Halaman)</span>
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPkwtPreviewTarget('active')}
+                        className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] cursor-pointer transition-colors"
+                      >
+                        <FileText className="w-4 h-4" aria-hidden="true" />
+                        <span>Lihat &amp; Download PDF PKWT (Mode Baca)</span>
+                      </button>
+                      {(pendingUnsignedContract || contractHistory.length === 0) && (
+                        <button
+                          type="button"
+                          onClick={() => selectMenu('emp-signature')}
+                          className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold text-[#102B69] bg-[#EAF2FF] hover:bg-[#1468E8] hover:text-white border border-[#C9DDFB] rounded-[4px] cursor-pointer transition-colors"
+                        >
+                          <PenTool className="w-4 h-4" aria-hidden="true" />
+                          <span>Tandatangani di Menu TTD</span>
+                        </button>
+                      )}
+                    </div>
                   )}
                 </section>
 
@@ -1843,101 +1894,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                 </section>
               </div>
 
-              {/* Digital Signature Section when PKWT awaits employee signature */}
-              {(pendingUnsignedContract ||
-                (employee.contractType === 'PKWT' && contractHistory.length === 0)) && (
-                <section
-                  aria-label="Tanda Tangan Digital PKWT"
-                  data-testid="emp-pkwt-sign-section"
-                  className="bg-white border border-[#1468E8]/40 rounded-[6px] p-6 space-y-4"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#E2E8F0] pb-3">
-                    <div>
-                      <h2 className="text-base font-bold text-[#102B69] flex items-center gap-2">
-                        <PenTool className="w-4 h-4 text-[#1468E8]" aria-hidden="true" />
-                        <span>
-                          Tanda Tangan Digital PKWT (
-                          {pendingUnsignedContract?.sequenceLabel ?? 'PKWT Aktif'})
-                        </span>
-                      </h2>
-                      <p className="text-xs text-[#64748B] mt-0.5">
-                        Nomor:{' '}
-                        <span className="font-mono font-semibold text-[#102B69]">
-                          {pendingUnsignedContract?.contractNumber ?? myContract.contractNumber}
-                        </span>{' '}
-                        · Tanda tangan digital Anda akan langsung tercantum pada Halaman 3 &amp; 4 dokumen PKWT dan tercatat di Riwayat Kontrak.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setPkwtPreviewTarget(pendingUnsignedContract ?? 'active')
-                      }
-                      className="px-3 py-1.5 text-xs font-semibold text-[#1468E8] bg-[#EAF2FF] hover:bg-[#1468E8] hover:text-white border border-[#C9DDFB] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      Baca Draf PKWT
-                    </button>
-                  </div>
-
-                  {pkwtSignFeedback && (
-                    <div
-                      role="status"
-                      className={`p-3 rounded-[4px] border text-xs font-semibold ${
-                        pkwtSignFeedback.ok
-                          ? 'bg-[#F0FDF4] border-[#BBF7D0] text-[#16A36A]'
-                          : 'bg-[#FEF2F2] border-[#FECACA] text-[#DC3545]'
-                      }`}
-                    >
-                      {pkwtSignFeedback.text}
-                    </div>
-                  )}
-
-                  <form onSubmit={handleSignPkwtSubmit} className="space-y-4 text-xs">
-                    <DigitalSignaturePad
-                      value={pkwtSignatureDataUrl}
-                      onChange={setPkwtSignatureDataUrl}
-                      signerLabel={employee.fullName}
-                    />
-
-                    <label className="inline-flex items-start gap-2.5 text-[#172033] font-medium cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={pkwtConsentChecked}
-                        onChange={(e) => setPkwtConsentChecked(e.target.checked)}
-                        className="mt-0.5"
-                      />
-                      <span>
-                        Saya telah membaca seluruh isi perjanjian kerja PKWT ini (Pasal 1 s/d Pasal 8) dan menyetujuinya secara hukum sebagai Pihak Kedua.
-                      </span>
-                    </label>
-
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                      <button
-                        type="submit"
-                        className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-[#16A36A] hover:bg-[#102B69] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer transition-colors"
-                      >
-                        <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
-                        <span>Setujui &amp; Tandatangani PKWT</span>
-                      </button>
-                    </div>
-                  </form>
-                </section>
-              )}
-
-              {pkwtSignFeedback && !pendingUnsignedContract && (
-                <div
-                  role="status"
-                  className={`p-4 rounded-[6px] border text-xs font-semibold ${
-                    pkwtSignFeedback.ok
-                      ? 'bg-[#F0FDF4] border-[#BBF7D0] text-[#16A36A]'
-                      : 'bg-[#FEF2F2] border-[#FECACA] text-[#DC3545]'
-                  }`}
-                >
-                  {pkwtSignFeedback.text}
-                </div>
-              )}
-
-              {/* Riwayat Kontrak Saya */}
+              {/* Riwayat Kontrak Saya (Arsip Read-Only) */}
               <section
                 aria-label="Riwayat Kontrak Saya"
                 className="bg-white border border-[#E2E8F0] rounded-[6px] overflow-hidden"
@@ -1950,7 +1907,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                         Riwayat Kontrak Saya ({contractHistory.length})
                       </h2>
                       <p className="text-xs text-[#64748B] mt-0.5">
-                        Arsip seluruh periode PKWT / PKWTT beserta bukti tanda tangan digital maupun berkas upload resmi.
+                        Arsip seluruh periode PKWT / PKWTT. Dokumen yang sudah ditandatangani terkunci permanen (hanya dapat dilihat &amp; diunduh PDF-nya).
                       </p>
                     </div>
                   </div>
@@ -1964,9 +1921,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                   <div className="divide-y divide-[#E2E8F0]">
                     {contractHistory.map((hist) => {
                       const isWaiting = hist.signatureStatus === 'Menunggu TTD Karyawan';
-                      const isSigned =
-                        hist.signatureStatus === 'Sudah TTD Digital' ||
-                        hist.signatureStatus === 'Sudah Upload TTD Manual';
+                      const isSigned = isContractSignedLocked(hist.signatureStatus);
                       return (
                         <div
                           key={hist.id}
@@ -1989,6 +1944,12 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                               >
                                 {hist.signatureStatus}
                               </span>
+                              {isSigned && (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#102B69]">
+                                  <Lock className="w-3 h-3 text-[#1468E8]" aria-hidden="true" />
+                                  <span>Terkunci · Read-Only</span>
+                                </span>
+                              )}
                             </div>
                             <p className="text-[#172033] font-medium">
                               {hist.position} · {hist.entityName}
@@ -2017,7 +1978,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                                 className="inline-flex items-center gap-1.5 px-3 py-1.5 font-semibold text-[#102B69] bg-[#F5F7FA] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer"
                               >
                                 <FileText className="w-3.5 h-3.5 text-[#1468E8]" aria-hidden="true" />
-                                <span>Lihat PKWT</span>
+                                <span>{isSigned ? 'Lihat & Unduh PDF' : 'Lihat PKWT'}</span>
                               </button>
                             )}
                           </div>
@@ -2026,6 +1987,316 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                     })}
                   </div>
                 )}
+              </section>
+            </div>
+          )}
+
+          {/* =============================================================== */}
+          {/* MENU 4B: MENU TTD (SPESIMEN TTD PRIBADI + TTD PKWT / PERPANJANGAN) */}
+          {/* =============================================================== */}
+          {activeMenu === 'emp-signature' && (
+            <div className="space-y-6">
+              {/* 1. Saved Personal Digital Signature Specimen */}
+              <section
+                aria-label="Pengaturan Tanda Tangan Digital Saya"
+                data-testid="emp-saved-signature-panel"
+                className="bg-white border border-[#E2E8F0] rounded-[6px] p-6 space-y-5"
+              >
+                <div className="flex items-start justify-between gap-4 border-b border-[#E2E8F0] pb-4">
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-base font-bold text-[#102B69] flex items-center gap-2">
+                      <PenTool className="w-4 h-4 text-[#1468E8]" aria-hidden="true" />
+                      <span>Tanda Tangan Digital Pribadi ({employee.fullName})</span>
+                    </h2>
+                    <p className="text-xs text-[#64748B] mt-1">
+                      Simpan tanda tangan digital resmi Anda di sini. Apabila nanti Super Admin / Admin menerbitkan kontrak baru atau perpanjangan PKWT, TTD tidak terpasang otomatis — Anda wajib meninjau isi dokumennya terlebih dahulu sebelum menyetujui &amp; menandatangani.
+                    </p>
+                  </div>
+                  <span
+                    className={`text-xs font-bold shrink-0 whitespace-nowrap pt-0.5 ${
+                      employee.savedSignatureDataUrl ? 'text-[#16A36A]' : 'text-[#B87D00]'
+                    }`}
+                  >
+                    {employee.savedSignatureDataUrl ? 'TTD Tersimpan Aktif' : 'Belum Disetel'}
+                  </span>
+                </div>
+
+                {savedSigFeedback && (
+                  <div
+                    role="status"
+                    className={`p-3 rounded-[4px] border text-xs font-semibold ${
+                      savedSigFeedback.ok
+                        ? 'bg-[#F0FDF4] border-[#BBF7D0] text-[#16A36A]'
+                        : 'bg-[#FEF2F2] border-[#FECACA] text-[#DC3545]'
+                    }`}
+                  >
+                    {savedSigFeedback.text}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  <div className="lg:col-span-4 p-4 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[6px] space-y-2.5 text-xs">
+                    <p className="font-bold text-[#102B69]">Spesimen TTD Tersimpan Saat Ini</p>
+                    {employee.savedSignatureDataUrl ? (
+                      <>
+                        <div className="bg-white border border-[#E2E8F0] rounded-[4px] p-3 flex items-center justify-center">
+                          <img
+                            src={employee.savedSignatureDataUrl}
+                            alt={`Spesimen TTD tersimpan ${employee.fullName}`}
+                            className="max-h-28 w-auto object-contain"
+                          />
+                        </div>
+                        <p className="text-[11px] text-[#64748B]">
+                          Terakhir diperbarui: {employee.savedSignatureUpdatedAt || 'Hari ini'}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-[11px] text-[#64748B] py-6 text-center bg-white border border-dashed border-[#CBD5E1] rounded-[4px]">
+                        Belum ada spesimen TTD tersimpan. Goreskan TTD di samping lalu klik Simpan.
+                      </p>
+                    )}
+                  </div>
+
+                  <form onSubmit={handleSaveSignatureSpecimen} className="lg:col-span-8 space-y-3 text-xs">
+                    <DigitalSignaturePad
+                      value={savedSigDraft}
+                      onChange={setSavedSigDraft}
+                      signerLabel={employee.fullName}
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        type="submit"
+                        data-testid="save-personal-signature-btn"
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] cursor-pointer transition-colors"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>
+                          {employee.savedSignatureDataUrl
+                            ? 'Perbarui Spesimen TTD Saya'
+                            : 'Simpan TTD Saya'}
+                        </span>
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </section>
+
+              {/* 2. Pending PKWT / Extension Review & Signing Queue */}
+              <section
+                aria-label="Kontrak PKWT Menunggu Tanda Tangan"
+                data-testid="emp-pkwt-sign-section"
+                className="bg-white border border-[#1468E8]/40 rounded-[6px] p-6 space-y-5"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#E2E8F0] pb-3">
+                  <div>
+                    <h2 className="text-base font-bold text-[#102B69]">
+                      Tinjauan &amp; Tanda Tangan PKWT ({pendingUnsignedContract?.sequenceLabel ?? contractSequenceLabel})
+                    </h2>
+                    <p className="text-xs text-[#64748B] mt-0.5">
+                      Kontrak baru maupun perpanjangan tidak langsung tertempel TTD. Baca draf surat lengkapnya terlebih dahulu, lalu setujui &amp; tandatangani secara sadar.
+                    </p>
+                  </div>
+                </div>
+
+                {pkwtSignFeedback && (
+                  <div
+                    role="status"
+                    className={`p-3 rounded-[4px] border text-xs font-semibold ${
+                      pkwtSignFeedback.ok
+                        ? 'bg-[#F0FDF4] border-[#BBF7D0] text-[#16A36A]'
+                        : 'bg-[#FEF2F2] border-[#FECACA] text-[#DC3545]'
+                    }`}
+                  >
+                    {pkwtSignFeedback.text}
+                  </div>
+                )}
+
+                {pendingUnsignedContract ||
+                (employee.contractType === 'PKWT' && contractHistory.length === 0) ? (
+                  <form onSubmit={handleSignPkwtSubmit} className="space-y-4 text-xs">
+                    <div className="p-4 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[6px] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <p className="font-bold text-sm text-[#102B69]">
+                          {pendingUnsignedContract?.sequenceLabel ?? 'PKWT Ke-1'} ·{' '}
+                          <span className="font-mono">
+                            {pendingUnsignedContract?.contractNumber ?? myContract.contractNumber}
+                          </span>
+                        </p>
+                        <p className="text-[#172033]">
+                          {pendingUnsignedContract?.position ?? employee.position} ·{' '}
+                          {pendingUnsignedContract?.entityName ?? employee.entityName}
+                        </p>
+                        <p className="text-[#64748B] tabular-nums">
+                          Periode:{' '}
+                          {formatIndonesianDate(
+                            pendingUnsignedContract?.startDate ?? employee.joinDate
+                          )}{' '}
+                          s/d{' '}
+                          {formatIndonesianDate(
+                            pendingUnsignedContract?.endDate ?? employee.contractEndDate
+                          )}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPkwtPreviewTarget(pendingUnsignedContract ?? 'active')}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 font-semibold text-[#1468E8] bg-white hover:bg-[#1468E8] hover:text-white border border-[#C9DDFB] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                      >
+                        <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Baca Draf PKWT (4 Halaman)</span>
+                      </button>
+                    </div>
+
+                    {employee.savedSignatureDataUrl && (
+                      <div className="inline-flex p-1 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px]">
+                        <button
+                          type="button"
+                          onClick={() => setSignSourceMode('saved')}
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-[3px] cursor-pointer ${
+                            signSourceMode === 'saved'
+                              ? 'bg-[#1468E8] text-white'
+                              : 'text-[#64748B] hover:text-[#102B69]'
+                          }`}
+                        >
+                          Pakai TTD Tersimpan Saya
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSignSourceMode('draw')}
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-[3px] cursor-pointer ${
+                            signSourceMode === 'draw'
+                              ? 'bg-[#1468E8] text-white'
+                              : 'text-[#64748B] hover:text-[#102B69]'
+                          }`}
+                        >
+                          Gores TTD Baru di Kanvas
+                        </button>
+                      </div>
+                    )}
+
+                    {signSourceMode === 'saved' && employee.savedSignatureDataUrl ? (
+                      <div className="p-4 bg-[#F8FAFC] border border-[#E2E8F0] rounded-[6px] space-y-2">
+                        <p className="font-semibold text-[#102B69]">
+                          Tanda tangan digital berikut akan dibubuhkan ke Halaman 3 &amp; 4 PKWT ini setelah Anda menyetujui:
+                        </p>
+                        <img
+                          src={employee.savedSignatureDataUrl}
+                          alt={`TTD tersimpan ${employee.fullName}`}
+                          className="h-24 w-56 object-contain bg-white border border-[#E2E8F0] rounded-[4px] p-2"
+                        />
+                      </div>
+                    ) : (
+                      <DigitalSignaturePad
+                        value={pkwtSignatureDataUrl}
+                        onChange={setPkwtSignatureDataUrl}
+                        signerLabel={employee.fullName}
+                      />
+                    )}
+
+                    <label className="inline-flex items-start gap-2.5 text-[#172033] font-medium cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={pkwtConsentChecked}
+                        onChange={(e) => setPkwtConsentChecked(e.target.checked)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        Saya telah melihat, membaca seluruh isi perjanjian kerja PKWT ini (Pasal 1 s/d Pasal 8), dan menyetujuinya secara hukum. Setelah ditandatangani, dokumen tersimpan permanen &amp; tidak dapat diedit.
+                      </span>
+                    </label>
+
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <button
+                        type="submit"
+                        data-testid="menu-ttd-submit-pkwt"
+                        className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-[#16A36A] hover:bg-[#102B69] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                      >
+                        <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                        <span>Setujui &amp; Tandatangani PKWT</span>
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <p className="p-4 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] text-xs text-[#64748B]">
+                    Tidak ada dokumen PKWT yang menunggu tanda tangan saat ini. Jika nanti HR / Super Admin menerbitkan perpanjangan PKWT baru, kontrak akan muncul di sini untuk Anda tinjau sebelum ditandatangani.
+                  </p>
+                )}
+              </section>
+
+              {/* 3. Signed & Locked Archive */}
+              <section
+                aria-label="Arsip PKWT Selesai TTD"
+                className="bg-white border border-[#E2E8F0] rounded-[6px] overflow-hidden"
+              >
+                <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-bold text-[#102B69] flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-[#16A36A]" aria-hidden="true" />
+                      <span>Arsip PKWT Tersimpan &amp; Terkunci Permanen</span>
+                    </h2>
+                    <p className="text-xs text-[#64748B] mt-0.5">
+                      Dokumen yang sudah selesai di-TTD tersimpan aman, hanya bisa dilihat dan diunduh PDF-nya (tidak dapat diedit kembali).
+                    </p>
+                  </div>
+                </div>
+                <div className="divide-y divide-[#E2E8F0]">
+                  {contractHistory.filter((h) => isContractSignedLocked(h.signatureStatus)).length ===
+                  0 ? (
+                    <p className="p-6 text-xs text-[#64748B]">
+                      Belum ada kontrak PKWT yang selesai ditandatangani.
+                    </p>
+                  ) : (
+                    contractHistory
+                      .filter((h) => isContractSignedLocked(h.signatureStatus))
+                      .map((hist) => (
+                        <div
+                          key={hist.id}
+                          className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-bold text-sm text-[#102B69]">
+                                {hist.sequenceLabel}
+                              </span>
+                              <span className="font-mono text-[#64748B]">{hist.contractNumber}</span>
+                              <span className="px-2 py-0.5 text-[11px] font-bold rounded-[3px] border text-[#16A36A] bg-[#ECFDF5] border-[#A7F3D0]">
+                                {hist.signatureStatus}
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#102B69]">
+                                <Lock className="w-3 h-3 text-[#1468E8]" aria-hidden="true" />
+                                <span>Terkunci · Read-Only</span>
+                              </span>
+                            </div>
+                            <p className="text-[#64748B] tabular-nums">
+                              Periode: {formatIndonesianDate(hist.startDate)} –{' '}
+                              {hist.endDate ? formatIndonesianDate(hist.endDate) : 'Tetap'}
+                              {hist.signedAt ? ` · TTD: ${hist.signedAt}` : ''}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-3 shrink-0">
+                            {hist.employeeSignatureDataUrl && (
+                              <img
+                                src={hist.employeeSignatureDataUrl}
+                                alt={`TTD ${employee.fullName}`}
+                                className="h-10 w-24 object-contain bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] p-1"
+                              />
+                            )}
+                            {hist.contractType === 'PKWT' && (
+                              <button
+                                type="button"
+                                onClick={() => setPkwtPreviewTarget(hist)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 font-semibold text-white bg-[#102B69] hover:bg-[#1468E8] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer"
+                              >
+                                <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Lihat &amp; Unduh PDF</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                  )}
+                </div>
               </section>
             </div>
           )}
@@ -2190,10 +2461,13 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                 </form>
               </section>
 
-              {/* Read-Only KTP & Employment Summary */}
-              <section className="bg-white border border-[#E2E8F0] rounded-[6px] p-6 space-y-4">
+              {/* Read-Only KTP & Employment Summary (incl. Kontrak Ke-N, Tanggal Join, EOC) */}
+              <section
+                data-testid="emp-profile-employment-summary"
+                className="bg-white border border-[#E2E8F0] rounded-[6px] p-6 space-y-4"
+              >
                 <h2 className="text-sm font-bold text-[#102B69] border-b border-[#E2E8F0] pb-2">
-                  Identitas Induk Karyawan &amp; Penempatan (Dikelola HR Admin)
+                  Identitas Induk Karyawan, Kontrak &amp; Penempatan (Dikelola HR / Super Admin)
                 </h2>
                 <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
                   <div>
@@ -2218,6 +2492,45 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                       {employee.kkNumber}
                     </dd>
                   </div>
+                  <div>
+                    <dt className="text-[#64748B]">Kontrak Ke Berapa &amp; Nomor</dt>
+                    <dd className="font-bold text-[#102B69] mt-0.5">
+                      {contractSequenceLabel} ·{' '}
+                      <span className="font-mono font-semibold text-[#172033]">
+                        {employee.contractNumber || myContract.contractNumber}
+                      </span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[#64748B]">Status TTD Kontrak</dt>
+                    <dd
+                      className={`font-bold mt-0.5 ${
+                        latestContractTtdStatus === 'Menunggu TTD Karyawan'
+                          ? 'text-[#B87D00]'
+                          : 'text-[#16A36A]'
+                      }`}
+                    >
+                      {latestContractTtdStatus}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[#64748B]">Tanggal Join (Mulai Kerja)</dt>
+                    <dd className="font-bold text-[#172033] tabular-nums mt-0.5">
+                      {formatIndonesianDate(employee.joinDate)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[#64748B]">Tanggal EOC (Berakhir Kontrak)</dt>
+                    <dd className="font-bold text-[#102B69] tabular-nums mt-0.5">
+                      {employee.contractType === 'PKWTT'
+                        ? 'Karyawan Tetap (PKWTT)'
+                        : `${formatIndonesianDate(employee.contractEndDate)}${
+                            contractDaysRemaining !== null
+                              ? ` (Sisa ${contractDaysRemaining} hari)`
+                              : ''
+                          }`}
+                    </dd>
+                  </div>
                   <div className="sm:col-span-2 lg:col-span-4 pt-2 border-t border-[#E2E8F0]">
                     <dt className="text-[#64748B]">Penempatan Klien &amp; Cabang / Area</dt>
                     <dd className="font-semibold text-[#102B69] mt-0.5 flex flex-wrap items-center gap-3">
@@ -2240,6 +2553,43 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                     </dd>
                   </div>
                 </dl>
+              </section>
+
+              {/* Digital & Uploaded BPJS Cards Section */}
+              <section
+                aria-label="Kartu BPJS Kesehatan dan BPJS Ketenagakerjaan"
+                className="bg-white border border-[#E2E8F0] rounded-[6px] p-6 space-y-4"
+              >
+                <div className="border-b border-[#E2E8F0] pb-3">
+                  <h2 className="text-sm font-bold text-[#102B69]">
+                    Kartu Kepesertaan BPJS Kesehatan (JKN-KIS) &amp; BPJS Ketenagakerjaan (KPJ)
+                  </h2>
+                  <p className="text-xs text-[#64748B] mt-0.5">
+                    Anda dapat melihat &amp; mengunduh kartu BPJS digital maupun mengunggah scan/PDF kartu asli agar sinkron ke Admin &amp; Super Admin.
+                  </p>
+                </div>
+                <BpjsCardsSection
+                  employee={employee}
+                  editable={true}
+                  onUploadCard={(kind, fileName, dataUrl) => {
+                    store.updateEmployeeSelfProfile(
+                      employee.id,
+                      kind === 'kesehatan'
+                        ? {
+                            bpjsKesehatanCardName: fileName,
+                            bpjsKesehatanCardDataUrl: dataUrl,
+                          }
+                        : {
+                            bpjsKetenagakerjaanCardName: fileName,
+                            bpjsKetenagakerjaanCardDataUrl: dataUrl,
+                          },
+                      actorLabel
+                    );
+                    setProfileSavedNotice(
+                      `Scan Kartu ${kind === 'kesehatan' ? 'BPJS Kesehatan' : 'BPJS Ketenagakerjaan'} (${fileName}) berhasil diunggah & disinkronkan ke Super Admin.`
+                    );
+                  }}
+                />
               </section>
 
               {/* Self-Service Editable Form: Kontak, BPJS, Rekening */}
@@ -2564,10 +2914,34 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
               contractHistory: [scopedHistory],
             }
           : employee;
+        const targetHistoryItem =
+          scopedHistory ??
+          employee.contractHistory?.find((h) => h.contractNumber === contractForModal.contractNumber) ??
+          pendingUnsignedContract ??
+          undefined;
+        const canSignThisModal =
+          canSignContractHistoryItem(targetHistoryItem) ||
+          (employee.contractType === 'PKWT' && contractHistory.length === 0);
         return (
           <PkwtDocumentModal
             contract={contractForModal}
             employee={employeeForModal}
+            settings={store.settings}
+            readOnly={true}
+            canSignNow={canSignThisModal}
+            savedSignatureDataUrl={employee.savedSignatureDataUrl}
+            onSignContract={(sigUrl) =>
+              store.signEmployeePkwtDigitally(
+                employee.id,
+                sigUrl,
+                actorLabel,
+                contractForModal.contractNumber
+              )
+            }
+            onGoToSignatureMenu={() => {
+              setPkwtPreviewTarget(null);
+              selectMenu('emp-signature');
+            }}
             onClose={() => setPkwtPreviewTarget(null)}
           />
         );

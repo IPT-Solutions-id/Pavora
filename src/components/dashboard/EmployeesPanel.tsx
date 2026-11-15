@@ -8,6 +8,7 @@ import {
   EmployeeRecord,
   EmploymentCategory,
   EntityRecord,
+  SystemSettingsConfig,
   buildEmployeeMailtoUrl,
   buildEmployeeWhatsappUrl,
   calculateDaysRemaining,
@@ -25,6 +26,7 @@ interface EmployeesPanelProps {
   employees: EmployeeRecord[];
   entities: EntityRecord[];
   departments: DepartmentRecord[];
+  settings?: SystemSettingsConfig;
   onCreateEmployee: (data: EmployeeFormInput) => void;
   onUpdateEmployee: (id: string, data: EmployeeFormInput) => void;
   onDeleteEmployee: (id: string) => void;
@@ -41,6 +43,7 @@ export const EmployeesPanel: React.FC<EmployeesPanelProps> = ({
   employees,
   entities,
   departments,
+  settings,
   onCreateEmployee,
   onUpdateEmployee,
   onDeleteEmployee,
@@ -538,6 +541,7 @@ export const EmployeesPanel: React.FC<EmployeesPanelProps> = ({
 
       {pkwtTarget && (
         <PkwtDocumentModal
+          settings={settings}
           contract={{
             id: `ctr-${pkwtTarget.employee.id}`,
             contractNumber:

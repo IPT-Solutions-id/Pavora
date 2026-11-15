@@ -19,6 +19,16 @@ import { ApplicantDashboard } from './components/applicant/ApplicantDashboard';
 import { EmployeeDashboard } from './components/employee/EmployeeDashboard';
 import { useWorkspaceStore } from './hooks/useWorkspaceStore';
 import { MasterAdminUser } from './utils/validation';
+import { CookieConsentBanner } from './components/CookieConsentBanner';
+import {
+  CookieConsentPreferences,
+  createAcceptAllConsent,
+  createCustomConsent,
+  createEssentialOnlyConsent,
+  loadCookieConsent,
+  saveCookieConsent,
+  shouldShowCookieBanner,
+} from './utils/cookieConsent';
 
 type ActiveView = 'landing' | 'login' | 'dashboard';
 
@@ -33,6 +43,11 @@ export default function App() {
   const [view, setView] = useState<ActiveView>(getInitialView);
   const [currentUser, setCurrentUser] = useState<MasterAdminUser | null>(null);
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
+  const [cookieConsent, setCookieConsent] = useState<CookieConsentPreferences | null>(() =>
+    loadCookieConsent()
+  );
+  const [isCookiePrefsOpen, setIsCookiePrefsOpen] = useState(false);
+  const [isPrivacyPolicyOpen, setIsPrivacyPolicyOpen] = useState(false);
   const store = useWorkspaceStore();
 
   useEffect(() => {
@@ -81,6 +96,21 @@ export default function App() {
     window.location.hash = 'login';
     setView('login');
     window.scrollTo({ top: 0 });
+  };
+
+  const handleAcceptAllCookies = () => {
+    setCookieConsent(saveCookieConsent(createAcceptAllConsent()));
+    setIsCookiePrefsOpen(false);
+  };
+
+  const handleAcceptEssentialCookies = () => {
+    setCookieConsent(saveCookieConsent(createEssentialOnlyConsent()));
+    setIsCookiePrefsOpen(false);
+  };
+
+  const handleSaveCustomCookies = (options: { preferences: boolean; analytics: boolean }) => {
+    setCookieConsent(saveCookieConsent(createCustomConsent(options)));
+    setIsCookiePrefsOpen(false);
   };
 
   const quotaBanner = mapsQuotaExceeded ? (
@@ -160,6 +190,19 @@ export default function App() {
           registeredUsers={store.users}
           onRegisterApplicant={store.registerApplicantAccount}
         />
+        <CookieConsentBanner
+          visibleBanner={shouldShowCookieBanner('login', cookieConsent)}
+          consent={cookieConsent}
+          isPreferencesOpen={isCookiePrefsOpen}
+          isPolicyOpen={isPrivacyPolicyOpen}
+          onAcceptAll={handleAcceptAllCookies}
+          onAcceptEssential={handleAcceptEssentialCookies}
+          onSaveCustom={handleSaveCustomCookies}
+          onOpenPreferences={() => setIsCookiePrefsOpen(true)}
+          onClosePreferences={() => setIsCookiePrefsOpen(false)}
+          onOpenPolicy={() => setIsPrivacyPolicyOpen(true)}
+          onClosePolicy={() => setIsPrivacyPolicyOpen(false)}
+        />
       </>
     );
   }
@@ -177,14 +220,31 @@ export default function App() {
       <Navbar onLoginClick={navigateToLogin} />
 
       <main id="konten-utama" className="flex-1">
-        <HeroSection />
+        <HeroSection onLoginClick={navigateToLogin} />
         <CapabilitiesGrid />
         <RoleExplorerSection />
         <ImpactProofSection />
         <DemoRequestSection />
       </main>
 
-      <Footer />
+      <Footer
+        onOpenCookieSettings={() => setIsCookiePrefsOpen(true)}
+        onOpenPrivacyPolicy={() => setIsPrivacyPolicyOpen(true)}
+      />
+
+      <CookieConsentBanner
+        visibleBanner={shouldShowCookieBanner('landing', cookieConsent)}
+        consent={cookieConsent}
+        isPreferencesOpen={isCookiePrefsOpen}
+        isPolicyOpen={isPrivacyPolicyOpen}
+        onAcceptAll={handleAcceptAllCookies}
+        onAcceptEssential={handleAcceptEssentialCookies}
+        onSaveCustom={handleSaveCustomCookies}
+        onOpenPreferences={() => setIsCookiePrefsOpen(true)}
+        onClosePreferences={() => setIsCookiePrefsOpen(false)}
+        onOpenPolicy={() => setIsPrivacyPolicyOpen(true)}
+        onClosePolicy={() => setIsPrivacyPolicyOpen(false)}
+      />
     </div>
   );
 }

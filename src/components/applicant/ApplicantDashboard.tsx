@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { PevoraLogo } from '../PevoraLogo';
+import { NotificationBellMenu } from '../shared/NotificationBellMenu';
 import type { MasterAdminUser } from '../../utils/validation';
 import type { WorkspaceStore } from '../../hooks/useWorkspaceStore';
 import {
@@ -155,6 +156,13 @@ export const ApplicantDashboard: React.FC<ApplicantDashboardProps> = ({
   const myInterviews = useMemo(
     () => myApplications.filter((app) => Boolean(app.interview)),
     [myApplications]
+  );
+  const myNotifications = useMemo(
+    () =>
+      store.notifications.filter(
+        (n) => n.recipientRole === 'applicant' && n.applicantId === profile.id
+      ),
+    [store.notifications, profile.id]
   );
   const contactedNeedsProfile = useMemo(
     () =>
@@ -592,6 +600,26 @@ export const ApplicantDashboard: React.FC<ApplicantDashboardProps> = ({
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
+            <NotificationBellMenu
+              notifications={myNotifications}
+              onSelectNotification={(notif) => {
+                store.markNotificationRead(notif.id);
+                if (notif.targetMenu === 'app-interviews' || notif.type === 'interview-scheduled') {
+                  selectMenu('app-interviews');
+                } else if (notif.targetMenu === 'app-profile') {
+                  selectMenu('app-profile');
+                } else if (notif.targetMenu === 'app-vacancies') {
+                  selectMenu('app-vacancies');
+                } else {
+                  selectMenu('app-applications');
+                }
+              }}
+              onMarkAllRead={() => {
+                myNotifications.forEach((n) => {
+                  if (!n.read) store.markNotificationRead(n.id);
+                });
+              }}
+            />
             <button
               type="button"
               onClick={() => selectMenu('app-vacancies')}

@@ -10,6 +10,7 @@ import {
   LeaveAbsenceRecord,
   OperationalSnapshot,
   OrganizationScopeCategory,
+  SystemSettingsConfig,
   WorkPolicyConfig,
   calculateEmployeeLeaveQuotaSummary,
   countExpiringPkwtContracts,
@@ -17,6 +18,10 @@ import {
   filterContracts,
   summarizeAttendanceLogs,
 } from '../../data/masterAdminData';
+import {
+  resolveEmployeeContractSequenceLabel,
+  resolveLatestContractSignatureStatus,
+} from '../../utils/pkwtLifecycle';
 import { PkwtDocumentModal } from './PkwtDocumentModal';
 import { EmployeeAttendanceRecapSection } from '../shared/EmployeeAttendanceRecapSection';
 
@@ -29,6 +34,7 @@ interface MonitoringPanelProps {
   contracts: ContractRecord[];
   employees?: EmployeeRecord[];
   policy?: WorkPolicyConfig;
+  settings?: SystemSettingsConfig;
   initialTab?: MonitoringTabId;
   onTabChange?: (tab: MonitoringTabId) => void;
   onApproveLeave: (id: string) => void;
@@ -74,10 +80,12 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
   contracts,
   employees = [],
   policy = INITIAL_POLICY,
+  settings,
   initialTab = 'summary',
   onTabChange,
   onApproveLeave,
   onRejectLeave,
+  onConvertAlphaToIzin,
   onExtendPkwtContract,
 }) => {
   const [activeTab, setActiveTab] = useState<MonitoringTabId>(initialTab);
@@ -123,7 +131,7 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
   const approvedLeaveCount = leaveAbsences.filter((l) => l.status === 'Disetujui').length;
   const alphaCount = leaveAbsences.filter(
     (l) =>
-      l.type === 'Alpha / Tanpa Keterangan' ||
+      (l.type === 'Alpha / Tanpa Keterangan' && l.status !== 'Terkonfirmasi Izin') ||
       l.status === 'Alpha' ||
       l.status === 'Perlu Klarifikasi'
   ).length;
@@ -157,10 +165,12 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
     if (!matchesSearch) return false;
     if (leaveFilterMode === 'Menunggu') return item.status === 'Menunggu';
     if (leaveFilterMode === 'Izin Sakit (SKD)') return item.type === 'Izin Sakit';
-    if (leaveFilterMode === 'Disetujui') return item.status === 'Disetujui';
+    if (leaveFilterMode === 'Disetujui') {
+      return item.status === 'Disetujui' || item.status === 'Terkonfirmasi Izin';
+    }
     if (leaveFilterMode === 'Alpha') {
       return (
-        item.type === 'Alpha / Tanpa Keterangan' ||
+        (item.type === 'Alpha / Tanpa Keterangan' && item.status !== 'Terkonfirmasi Izin') ||
         item.status === 'Alpha' ||
         item.status === 'Perlu Klarifikasi'
       );
@@ -635,8 +645,13 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
                     leaveAbsences,
                     policy.annualLeaveQuota
                   );
+                  const isClarifiedPendingAlpha =
+                    item.type === 'Alpha / Tanpa Keterangan' &&
+                    item.status === 'Menunggu' &&
+                    item.reason.startsWith('[Klarifikasi Karyawan]');
                   const isAlphaRecord =
-                    item.type === 'Alpha / Tanpa Keterangan' ||
+                    (item.type === 'Alpha / Tanpa Keterangan' &&
+                      item.status !== 'Terkonfirmasi Izin') ||
                     item.status === 'Alpha' ||
                     item.status === 'Perlu Klarifikasi';
                   const projectedRemaining = Math.max(
@@ -759,7 +774,30 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
                           </>
                         )}
 
-                        {isAlphaRecord && (
+                        {isClarifiedPendingAlpha && (
+                          <>
+                            <button
+                              type="button"
+                              data-testid={`convert-alpha-${item.id}`}
+                              onClick={() => onConvertAlphaToIzin?.(item.id)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] cursor-pointer"
+                            >
+                              <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>Konfirmasi Jadi Izin</span>
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`reject-alpha-${item.id}`}
+                              onClick={() => onRejectLeave(item.id)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-[#DC3545] bg-white hover:bg-[#FEF2F2] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>Tetap Alpha (Tolak)</span>
+                            </button>
+                          </>
+                        )}
+
+                        {isAlphaRecord && !isClarifiedPendingAlpha && (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold text-[#DC3545] bg-[#FEF2F2] border border-[#FECACA] rounded-[4px]">
                             <Lock className="w-3.5 h-3.5" aria-hidden="true" />
                             <span>Alpha Mengikat (Tanpa Keterangan)</span>
@@ -942,71 +980,105 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
                     </td>
                   </tr>
                 ) : (
-                  visibleContracts.map((c) => (
-                    <tr key={c.id} className="hover:bg-[#F5F7FA]/60 transition-colors">
-                      <td className="py-3 px-6">
-                        <p className="text-xs font-bold text-[#102B69] tabular-nums">
-                          {c.contractNumber}
-                        </p>
-                        <p className="text-[11px] text-[#64748B]">{c.contractType}</p>
-                      </td>
-                      <td className="py-3 px-4">
-                        <p className="font-semibold text-[#172033]">{c.employeeName}</p>
-                        <p className="text-xs text-[#64748B] tabular-nums">
-                          {c.employeeCode} · {c.employmentType}
-                        </p>
-                      </td>
-                      <td className="py-3 px-4 text-xs text-[#102B69] font-medium">
-                        {c.entityName}
-                      </td>
-                      <td className="py-3 px-4 text-xs text-[#172033] tabular-nums">
-                        <p>
-                          {c.startDate} – {c.endDate}
-                        </p>
-                        {c.daysRemaining !== null && (
-                          <p className="text-[11px] text-[#64748B]">
-                            Sisa {c.daysRemaining} hari
+                  visibleContracts.map((c) => {
+                    const matchedEmp = employees.find(
+                      (e) => e.employeeCode.toLowerCase() === c.employeeCode.toLowerCase()
+                    );
+                    const seqLabel = matchedEmp
+                      ? resolveEmployeeContractSequenceLabel(matchedEmp)
+                      : c.contractType;
+                    const ttdStatus = matchedEmp
+                      ? resolveLatestContractSignatureStatus(matchedEmp)
+                      : null;
+                    return (
+                      <tr key={c.id} className="hover:bg-[#F5F7FA]/60 transition-colors">
+                        <td className="py-3 px-6">
+                          <p className="text-xs font-bold text-[#102B69] tabular-nums">
+                            {c.contractNumber}
                           </p>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 text-xs whitespace-nowrap">
-                        <span
-                          className={`font-bold ${
-                            c.status === 'Segera Berakhir'
-                              ? 'text-[#B87D00]'
-                              : 'text-[#16A36A]'
-                          }`}
-                        >
-                          {c.status}
-                        </span>
-                      </td>
-                      <td className="py-3 px-6 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center justify-end gap-2">
-                          {c.contractType === 'PKWT' && (
-                            <button
-                              type="button"
-                              onClick={() => setActivePkwtContract(c)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-[#102B69] bg-[#F5F7FA] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
-                            >
-                              <FileText className="w-3.5 h-3.5" aria-hidden="true" />
-                              <span>Cetak PKWT</span>
-                            </button>
+                          <p className="text-[11px] text-[#64748B]">{seqLabel}</p>
+                        </td>
+                        <td className="py-3 px-4">
+                          <p className="font-semibold text-[#172033]">{c.employeeName}</p>
+                          <p className="text-xs text-[#64748B] tabular-nums">
+                            {c.employeeCode} · {c.employmentType}
+                          </p>
+                        </td>
+                        <td className="py-3 px-4 text-xs text-[#102B69] font-medium">
+                          {c.entityName}
+                        </td>
+                        <td className="py-3 px-4 text-xs text-[#172033] tabular-nums">
+                          <p>
+                            {c.startDate} – {c.endDate}
+                          </p>
+                          {c.daysRemaining !== null && (
+                            <p className="text-[11px] text-[#64748B]">
+                              Sisa {c.daysRemaining} hari
+                            </p>
                           )}
-                          {c.contractType === 'PKWT' && c.status !== 'Diperpanjang' ? (
-                            <button
-                              type="button"
-                              onClick={() => onExtendPkwtContract(c.id)}
-                              className="text-xs font-semibold text-[#1468E8] hover:text-[#102B69] cursor-pointer"
+                        </td>
+                        <td className="py-3 px-4 text-xs whitespace-nowrap space-y-0.5">
+                          <p
+                            className={`font-bold ${
+                              c.status === 'Segera Berakhir'
+                                ? 'text-[#B87D00]'
+                                : 'text-[#16A36A]'
+                            }`}
+                          >
+                            {c.status}
+                          </p>
+                          {c.extensionRequested && c.status !== 'Diperpanjang' && (
+                            <p className="inline-block px-1.5 py-0.5 text-[10px] font-bold bg-[#FFFBEB] text-[#B87D00] border border-[#FDE68A] rounded-[3px]">
+                              Usulan Admin · Menunggu ACC
+                            </p>
+                          )}
+                          {ttdStatus && c.contractType === 'PKWT' && (
+                            <p
+                              className={`text-[11px] font-semibold ${
+                                ttdStatus === 'Menunggu TTD Karyawan'
+                                  ? 'text-[#B87D00]'
+                                  : 'text-[#16A36A]'
+                              }`}
                             >
-                              Perpanjang 6 Bulan
-                            </button>
-                          ) : c.contractType !== 'PKWT' ? (
-                            <span className="text-xs text-[#64748B]">—</span>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  ))
+                              {ttdStatus}
+                            </p>
+                          )}
+                        </td>
+                        <td className="py-3 px-6 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center justify-end gap-2">
+                            {c.contractType === 'PKWT' && (
+                              <button
+                                type="button"
+                                onClick={() => setActivePkwtContract(c)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-[#102B69] bg-[#F5F7FA] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
+                              >
+                                <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Lihat / Cetak PKWT</span>
+                              </button>
+                            )}
+                            {c.contractType === 'PKWT' && c.status !== 'Diperpanjang' ? (
+                              <button
+                                type="button"
+                                data-testid={`extend-pkwt-${c.id}`}
+                                onClick={() => onExtendPkwtContract(c.id)}
+                                className="text-xs font-semibold text-[#1468E8] hover:text-[#102B69] cursor-pointer"
+                              >
+                                {c.extensionRequested
+                                  ? 'ACC & Perpanjang 6 Bln'
+                                  : 'Perpanjang 6 Bulan'}
+                              </button>
+                            ) : c.contractType === 'PKWT' && ttdStatus === 'Menunggu TTD Karyawan' ? (
+                              <span className="text-[11px] font-semibold text-[#B87D00]">
+                                Menunggu TTD di Karyawan
+                              </span>
+                            ) : c.contractType !== 'PKWT' ? (
+                              <span className="text-xs text-[#64748B]">—</span>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -1018,6 +1090,7 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
         <PkwtDocumentModal
           contract={activePkwtContract}
           employee={employees.find((e) => e.employeeCode === activePkwtContract.employeeCode)}
+          settings={settings}
           onClose={() => setActivePkwtContract(null)}
         />
       )}

@@ -30,7 +30,7 @@ export const EMPLOYEE_COUNT_OPTIONS = [
 
 export const PRIORITY_ROLE_OPTIONS = [
   { value: 'Master Admin', label: 'Master Admin (Tata Kelola & Multi-Entitas)' },
-  { value: 'Admin', label: 'Admin (Operasional HR & Payroll)' },
+  { value: 'Admin', label: 'Admin (Operasional HR, Berkas & PKWT)' },
   { value: 'Rekruter', label: 'Rekruter (Akuisisi Talenta & ATS)' },
   { value: 'Karyawan', label: 'Karyawan (Layanan Mandiri / ESS)' },
 ] as const;
@@ -135,6 +135,7 @@ export interface ApplicantAuthCandidate {
 export interface EmployeeAuthCandidate {
   id: string;
   employeeCode: string;
+  loginAlias?: string;
   fullName: string;
   email: string;
   entityName: string;
@@ -188,8 +189,10 @@ export function authenticatePortalUser(
   // 1. Check registered internal management users if provided (Master Admin, Admin, Rekruter)
   const internalAliasMap: Record<string, string> = {
     'swa-fathur': 'ma-001',
+    'swa-ulan': 'adm-014',
     'adm-siti': 'adm-014',
     'adm-bagus': 'adm-021',
+    'swa-rama': 'rec-008',
     'rec-dina': 'rec-008',
   };
   const resolvedInternalCode = internalAliasMap[normalizedId] ?? normalizedId;
@@ -233,7 +236,9 @@ export function authenticatePortalUser(
         role: matchedInternalUser.role,
         title: roleTitle,
         assignedScopes:
-          matchedInternalUser.role === 'Admin' ? matchedInternalUser.assignedScopes : [],
+          matchedInternalUser.role === 'Admin' || matchedInternalUser.role === 'Rekruter'
+            ? matchedInternalUser.assignedScopes
+            : [],
         email: matchedInternalUser.email,
       },
     };
@@ -254,20 +259,24 @@ export function authenticatePortalUser(
       };
     }
     if (
-      (normalizedId === 'adm-siti' || normalizedId === 'siti.rahmawati@swapro-demo.co.id') &&
+      (normalizedId === 'swa-ulan' ||
+        normalizedId === 'swa-ulan@swapro-demo.co.id' ||
+        normalizedId === 'adm-siti' ||
+        normalizedId === 'siti.rahmawati@swapro-demo.co.id') &&
       password === '1234'
     ) {
       return {
         ok: true,
         user: {
           id: 'ADM-014',
-          name: 'Siti Rahmawati',
+          name: 'Ulan Rahmawati',
           role: 'Admin',
           title: 'Admin Cakupan Klien (Adira & BAF)',
           assignedScopes: [
             'Adira Finance — Penempatan Regional',
             'BAF — Layanan Operasional Cabang',
           ],
+          email: 'swa-ulan@swapro-demo.co.id',
         },
       };
     }
@@ -287,7 +296,9 @@ export function authenticatePortalUser(
       };
     }
     if (
-      (normalizedId === 'rec-dina' ||
+      (normalizedId === 'swa-rama' ||
+        normalizedId === 'swa-rama@swapro-demo.co.id' ||
+        normalizedId === 'rec-dina' ||
         normalizedId === 'rec-008' ||
         normalizedId === 'dina.lestari@swapro-demo.co.id') &&
       password === '1234'
@@ -296,20 +307,32 @@ export function authenticatePortalUser(
         ok: true,
         user: {
           id: 'REC-008',
-          name: 'Dina Lestari',
+          name: 'Rama Wijaya',
           role: 'Rekruter',
           title: 'Talent Acquisition Lead · PT Swapro Nusantara',
-          assignedScopes: [],
-          email: 'dina.lestari@swapro-demo.co.id',
+          assignedScopes: [
+            'Pusat Rekrutmen & Pelatihan',
+            'Adira Finance — Penempatan Regional',
+            'FIFGROUP — Area Jawa Timur',
+            'BAF — Layanan Operasional Cabang',
+          ],
+          email: 'swa-rama@swapro-demo.co.id',
         },
       };
     }
   }
 
+  const applicantAliasMap: Record<string, string> = {
+    'swa-pelamar': 'plm-2026-001',
+    'plm-sari': 'plm-2026-001',
+    'sari.wulandari@pelamar-demo.id': 'plm-2026-001',
+  };
+  const resolvedApplicantLookup = applicantAliasMap[normalizedId] ?? normalizedId;
+
   // 2. If user explicitly entered a Pelamar code/loginId (e.g. PLM-2026-002 or plm-rizky) that was already converted to an Employee NIK (e.g. ADR-001), inform them to use their new NIK
   const matchedApplicantByCode = registeredApplicants.find(
     (acc) =>
-      acc.applicantCode.toLowerCase() === normalizedId ||
+      acc.applicantCode.toLowerCase() === resolvedApplicantLookup ||
       (acc.loginId && !acc.loginId.includes('@') && acc.loginId.toLowerCase() === normalizedId)
   );
   if (matchedApplicantByCode) {
@@ -330,8 +353,10 @@ export function authenticatePortalUser(
     }
   }
 
-  // 3. Check registered / seeded Karyawan accounts (supports NIK Karyawan, email, and demo shortcuts emp-nadia / emp-raka)
+  // 3. Check registered / seeded Karyawan accounts (supports NIK Karyawan, email, loginAlias, and demo shortcuts swa-rudi / emp-nadia / emp-raka)
   const shortcutCodeMap: Record<string, string> = {
+    'swa-rudi': 'new-209',
+    'emp-rudi': 'new-209',
     'emp-nadia': 'out-318',
     'emp-raka': 'emp-1024',
   };
@@ -340,6 +365,7 @@ export function authenticatePortalUser(
   const matchedEmployee = registeredEmployees.find(
     (emp) =>
       emp.employeeCode.toLowerCase() === targetEmployeeLookup ||
+      (emp.loginAlias && emp.loginAlias.toLowerCase() === normalizedId) ||
       emp.email.toLowerCase() === normalizedId ||
       emp.id.toLowerCase() === normalizedId
   );
@@ -377,26 +403,45 @@ export function authenticatePortalUser(
   }
 
   // Fallback demo Karyawan if caller omitted registeredEmployees
-  if (
-    registeredEmployees.length === 0 &&
-    (normalizedId === 'emp-nadia' ||
+  if (registeredEmployees.length === 0 && password === '1234') {
+    if (
+      normalizedId === 'swa-rudi' ||
+      normalizedId === 'new-209' ||
+      normalizedId === 'swa-rudi@swapro-demo.co.id'
+    ) {
+      return {
+        ok: true,
+        user: {
+          id: 'NEW-209',
+          name: 'Rudi Hartono',
+          role: 'Karyawan',
+          title: 'Karyawan Penempatan Klien · Adira Finance — Penempatan Regional',
+          assignedScopes: ['Adira Finance — Penempatan Regional'],
+          employeeId: 'emp-6',
+          employeeCode: 'NEW-209',
+          email: 'swa-rudi@swapro-demo.co.id',
+        },
+      };
+    }
+    if (
+      normalizedId === 'emp-nadia' ||
       normalizedId === 'out-318' ||
-      normalizedId === 'nadia.kusuma@swapro-demo.co.id') &&
-    password === '1234'
-  ) {
-    return {
-      ok: true,
-      user: {
-        id: 'OUT-318',
-        name: 'Nadia Kusuma',
-        role: 'Karyawan',
-        title: 'Karyawan Penempatan Klien · BAF — Layanan Operasional Cabang',
-        assignedScopes: ['BAF — Layanan Operasional Cabang'],
-        employeeId: 'emp-2',
-        employeeCode: 'OUT-318',
-        email: 'nadia.kusuma@swapro-demo.co.id',
-      },
-    };
+      normalizedId === 'nadia.kusuma@swapro-demo.co.id'
+    ) {
+      return {
+        ok: true,
+        user: {
+          id: 'OUT-318',
+          name: 'Nadia Kusuma',
+          role: 'Karyawan',
+          title: 'Karyawan Penempatan Klien · BAF — Layanan Operasional Cabang',
+          assignedScopes: ['BAF — Layanan Operasional Cabang'],
+          employeeId: 'emp-2',
+          employeeCode: 'OUT-318',
+          email: 'nadia.kusuma@swapro-demo.co.id',
+        },
+      };
+    }
   }
 
   // 4. Check registered / seeded Pelamar accounts
@@ -404,7 +449,7 @@ export function authenticatePortalUser(
     (acc) =>
       acc.loginId.toLowerCase() === normalizedId ||
       acc.email.toLowerCase() === normalizedId ||
-      acc.applicantCode.toLowerCase() === normalizedId
+      acc.applicantCode.toLowerCase() === resolvedApplicantLookup
   );
   if (matchedApplicant && matchedApplicant.password === password) {
     const convertedEmp = registeredEmployees.find(
@@ -444,7 +489,10 @@ export function authenticatePortalUser(
   // Fallback default demo Pelamar if caller did not pass list
   if (
     registeredApplicants.length === 0 &&
-    (normalizedId === 'plm-sari' || normalizedId === 'sari.wulandari@pelamar-demo.id') &&
+    (normalizedId === 'swa-pelamar' ||
+      normalizedId === 'swa-pelamar@pelamar-demo.id' ||
+      normalizedId === 'plm-sari' ||
+      normalizedId === 'sari.wulandari@pelamar-demo.id') &&
     password === '1234'
   ) {
     return {
@@ -456,7 +504,7 @@ export function authenticatePortalUser(
         title: 'Portal Pelamar Kerja PEVORA',
         assignedScopes: [],
         applicantId: 'app-user-1',
-        email: 'sari.wulandari@pelamar-demo.id',
+        email: 'swa-pelamar@pelamar-demo.id',
       },
     };
   }

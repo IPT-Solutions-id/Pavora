@@ -7,6 +7,7 @@ import {
   EmployeeFormInput,
   EmployeeRecord,
   EntityRecord,
+  SystemSettingsConfig,
   buildEmployeeMailtoUrl,
   buildEmployeeWhatsappUrl,
   calculateDaysRemaining,
@@ -25,6 +26,7 @@ interface AdminEmployeesPanelProps {
   entities: EntityRecord[];
   departments: DepartmentRecord[];
   assignedScopes: string[];
+  settings?: SystemSettingsConfig;
   onUpdateEmployee: (id: string, data: EmployeeFormInput) => void;
   onResetFaceBiometric?: (employee: EmployeeRecord) => void;
   onMarkReviewed?: (employee: EmployeeRecord) => void;
@@ -40,6 +42,7 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
   entities,
   departments,
   assignedScopes,
+  settings,
   onUpdateEmployee,
   onResetFaceBiometric,
   onMarkReviewed,
@@ -393,6 +396,7 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
 
       {pkwtTarget && (
         <PkwtDocumentModal
+          settings={settings}
           contract={{
             id: `ctr-${pkwtTarget.employee.id}`,
             contractNumber:

@@ -26,8 +26,29 @@ import {
   validateRegisterForm,
   authenticateMasterAdmin,
   authenticatePortalUser,
+  PRIORITY_ROLE_OPTIONS,
 } from './validation';
-import { getRoleById, getModulesForRole, ROLES } from '../data/hrisData';
+import {
+  COOKIE_CONSENT_STORAGE_KEY,
+  COOKIE_CONSENT_VERSION,
+  clearCookieConsent,
+  createAcceptAllConsent,
+  createCustomConsent,
+  createEssentialOnlyConsent,
+  loadCookieConsent,
+  parseCookieConsentJson,
+  saveCookieConsent,
+  shouldShowCookieBanner,
+  StorageLike,
+} from './cookieConsent';
+import {
+  CAPABILITY_MODULES,
+  END_TO_END_WORKFLOW,
+  IMPACT_STATS,
+  getRoleById,
+  getModulesForRole,
+  ROLES,
+} from '../data/hrisData';
 import {
   DOCUMENT_CHECKLIST_ITEMS,
   INITIAL_APPROVALS,
@@ -81,6 +102,7 @@ import {
   syncAttendanceLocationsFromEntities,
   validateEmployeeInput,
   validateLeaveRequestSubmission,
+  buildLiveOperationalSnapshots,
 } from '../data/masterAdminData';
 import {
   buildLiveAttendanceFeed,
@@ -93,17 +115,24 @@ import {
   INITIAL_JOB_APPLICATIONS,
   INITIAL_VACANCIES,
   buildApplicantEmployeeFormPrefill,
+  buildApplicantMailtoUrl,
+  buildApplicantWhatsappUrl,
   calculateAgeFromIsoDate,
   calculateApplicantProfileCompleteness,
   computeRemainingHeadcount,
   filterApplicationsForRecruiter,
+  filterRecruiterVacanciesByScope,
   filterVacanciesForApplicant,
   formatSalaryRangeRupiah,
   getDistinctClientNames,
+  resolveMasterClientVacancyOptions,
+  validateMasterClientVacancySelection,
 } from '../data/recruitmentData';
 import {
   FACE_MATCH_THRESHOLD_PERCENT,
   FacePoint,
+  canAutoCompleteAttendance,
+  canAutoCompleteEnrollment,
   computeFaceDescriptorSimilarity,
   computeHeadYawRatio,
   createInitialLivenessState,
@@ -116,6 +145,19 @@ import {
   isValidMapsUrl,
   parseGoogleMapsUrl,
 } from './mapsUrl';
+import {
+  buildExtendedPkwtContractDraft,
+  canSignContractHistoryItem,
+  isContractSignedLocked,
+  isPkwtModalReadOnly,
+  resolveEmployeeContractSequenceLabel,
+  resolveLatestContractSignatureStatus,
+} from './pkwtLifecycle';
+import {
+  buildDigitalBpjsCardSvgDataUrl,
+  formatBpjsKesDisplay,
+  formatBpjsTkDisplay,
+} from './bpjsCard';
 
 test('validateDemoRequest rejects empty fields with Indonesian error messages', () => {
   const result = validateDemoRequest({
@@ -166,12 +208,28 @@ test('formatHeadcountLabel maps option value to readable label', () => {
   assert.equal(formatHeadcountLabel('custom'), 'custom');
 });
 
-test('HRIS role helpers return all 4 required roles and relevant modules', () => {
+test('HRIS role helpers return all 4 required roles and relevant modules without payroll wording', () => {
   assert.equal(ROLES.length, 4);
   assert.equal(getRoleById('rekruter').name, 'Rekruter');
   assert.equal(getRoleById('karyawan').name, 'Karyawan');
   assert.ok(getModulesForRole('master-admin').length >= 2);
-  assert.ok(getModulesForRole('karyawan').some((m) => m.id === 'payroll-compliance'));
+  assert.ok(getModulesForRole('karyawan').some((m) => m.id === 'pkwt-bpjs-compliance'));
+  assert.equal(END_TO_END_WORKFLOW.length, 5);
+
+  const landingSerialized = JSON.stringify({
+    ROLES,
+    CAPABILITY_MODULES,
+    END_TO_END_WORKFLOW,
+    IMPACT_STATS,
+    PRIORITY_ROLE_OPTIONS,
+  }).toLowerCase();
+  for (const forbidden of ['payroll', 'penggajian', 'pph 21', 'slip gaji']) {
+    assert.equal(
+      landingSerialized.includes(forbidden),
+      false,
+      `Landing data should not contain "${forbidden}"`
+    );
+  }
 });
 
 test('validateLoginForm rejects empty or short (<4) password and invalid identifier', () => {
@@ -253,7 +311,7 @@ test('validateRegisterForm validates individual registration fields and password
 test('Master Admin data helpers filter users, scopes, audit logs, and count pending approvals', () => {
   assert.equal(countPendingApprovals(INITIAL_APPROVALS), 3);
   assert.equal(filterUsersByQueryAndRole(INITIAL_USERS, '', 'Admin').length, 2);
-  assert.equal(filterUsersByQueryAndRole(INITIAL_USERS, 'Dina', 'Semua').length, 1);
+  assert.equal(filterUsersByQueryAndRole(INITIAL_USERS, 'Rama', 'Semua').length, 1);
   assert.equal(filterUsersByQueryAndRole(INITIAL_USERS, '', 'Semua', 'Penempatan Klien').length, 2);
 
   const { internalUnits, clientPlacements } = splitActiveEntitiesByCategory(INITIAL_ENTITIES);
@@ -332,18 +390,18 @@ test('validateEmployeeInput enforces KTP, KK, Bank, WA, Email, Join Date and PKW
 });
 
 test('authenticatePortalUser supports Admin accounts with assignedScopes and rejects invalid credentials', () => {
-  const sitiById = authenticatePortalUser('adm-siti', '1234');
-  assert.equal(sitiById.ok, true);
-  assert.equal(sitiById.user?.role, 'Admin');
-  assert.equal(sitiById.user?.name, 'Siti Rahmawati');
-  assert.deepEqual(sitiById.user?.assignedScopes, [
+  const ulanById = authenticatePortalUser('swa-ulan', '1234');
+  assert.equal(ulanById.ok, true);
+  assert.equal(ulanById.user?.role, 'Admin');
+  assert.equal(ulanById.user?.name, 'Ulan Rahmawati');
+  assert.deepEqual(ulanById.user?.assignedScopes, [
     'Adira Finance — Penempatan Regional',
     'BAF — Layanan Operasional Cabang',
   ]);
 
-  const sitiByEmail = authenticatePortalUser('siti.rahmawati@swapro-demo.co.id', '1234');
-  assert.equal(sitiByEmail.ok, true);
-  assert.equal(sitiByEmail.user?.id, 'ADM-014');
+  const ulanByEmail = authenticatePortalUser('swa-ulan@swapro-demo.co.id', '1234');
+  assert.equal(ulanByEmail.ok, true);
+  assert.equal(ulanByEmail.user?.id, 'ADM-014');
 
   const bagus = authenticatePortalUser('adm-bagus', '1234');
   assert.equal(bagus.ok, true);
@@ -353,7 +411,7 @@ test('authenticatePortalUser supports Admin accounts with assignedScopes and rej
     'FIFGROUP — Area Jawa Timur',
   ]);
 
-  const wrongPwd = authenticatePortalUser('adm-siti', '0000');
+  const wrongPwd = authenticatePortalUser('swa-ulan', '0000');
   assert.equal(wrongPwd.ok, false);
 });
 
@@ -483,23 +541,23 @@ test('generatePkwtPdfBytes renders exact 4 A4 pages with embedded SWAPRO fonts, 
 });
 
 test('authenticatePortalUser supports Rekruter, seeded Pelamar, and newly registered Pelamar accounts', () => {
-  const rec = authenticatePortalUser('rec-dina', '1234', INITIAL_APPLICANT_PROFILES);
+  const rec = authenticatePortalUser('swa-rama', '1234', INITIAL_APPLICANT_PROFILES);
   assert.equal(rec.ok, true);
   assert.equal(rec.user?.role, 'Rekruter');
-  assert.equal(rec.user?.name, 'Dina Lestari');
+  assert.equal(rec.user?.name, 'Rama Wijaya');
 
   const recByEmail = authenticatePortalUser(
-    'dina.lestari@swapro-demo.co.id',
+    'swa-rama@swapro-demo.co.id',
     '1234',
     INITIAL_APPLICANT_PROFILES
   );
   assert.equal(recByEmail.ok, true);
   assert.equal(recByEmail.user?.id, 'REC-008');
 
-  const sari = authenticatePortalUser('plm-sari', '1234', INITIAL_APPLICANT_PROFILES);
-  assert.equal(sari.ok, true);
-  assert.equal(sari.user?.role, 'Pelamar');
-  assert.equal(sari.user?.applicantId, 'app-user-1');
+  const pelamar = authenticatePortalUser('swa-pelamar', '1234', INITIAL_APPLICANT_PROFILES);
+  assert.equal(pelamar.ok, true);
+  assert.equal(pelamar.user?.role, 'Pelamar');
+  assert.equal(pelamar.user?.applicantId, 'app-user-1');
 
   const customApplicantList = [
     ...INITIAL_APPLICANT_PROFILES,
@@ -1503,4 +1561,539 @@ test('Role Admin WA & Email follow-up builders and RBAC Cuti/SKD authority separ
   assert.ok(presensiRbac.masterAdmin.includes('ACC Cuti/SKD'));
   assert.ok(presensiRbac.admin.includes('ACC Master Admin'));
 });
+
+test('Role Rekruter: assignedScopes isolation, Master Client position/placement vacancy sync, and applicant WA/Email builders', () => {
+  // 1. Authenticating Rama Wijaya (swa-rama) carries assignedScopes including BAF & Adira
+  const recLogin = authenticatePortalUser(
+    'swa-rama',
+    '1234',
+    INITIAL_APPLICANT_PROFILES,
+    INITIAL_EMPLOYEES,
+    INITIAL_USERS
+  );
+  assert.equal(recLogin.ok, true);
+  assert.equal(recLogin.user?.role, 'Rekruter');
+  assert.ok(recLogin.user?.assignedScopes.includes('Adira Finance — Penempatan Regional'));
+  assert.ok(recLogin.user?.assignedScopes.includes('BAF — Layanan Operasional Cabang'));
+  assert.equal(recLogin.user?.assignedScopes.includes('Kantor Pusat Operasional'), false);
+
+  const dinaScopes = recLogin.user?.assignedScopes ?? [];
+
+  // 2. Scope filtering isolates recruiter vacancies to assigned clients and selectedScope
+  const scopedAll = filterRecruiterVacanciesByScope(INITIAL_VACANCIES, dinaScopes, 'Semua Cakupan');
+  assert.equal(scopedAll.length, 3);
+  assert.equal(
+    scopedAll.some((v) => v.clientName.includes('Telkom Akses')),
+    false
+  );
+  const scopedAdiraOnly = filterRecruiterVacanciesByScope(
+    INITIAL_VACANCIES,
+    dinaScopes,
+    'Adira Finance — Penempatan Regional'
+  );
+  assert.equal(scopedAdiraOnly.length, 1);
+
+  // 3. Master Client options resolve positions and placements strictly for assigned active entities
+  const masterOpts = resolveMasterClientVacancyOptions(INITIAL_ENTITIES, dinaScopes);
+  assert.equal(masterOpts.length, 4);
+  assert.equal(
+    masterOpts.some((opt) => opt.entity.name === 'Kantor Pusat Operasional'),
+    false
+  );
+  const adiraOpt = masterOpts.find(
+    (opt) => opt.entity.name === 'Adira Finance — Penempatan Regional'
+  );
+  assert.ok(adiraOpt);
+  assert.ok(adiraOpt.positions.some((p) => p.title === 'Field Collection Officer'));
+  assert.ok(adiraOpt.placements.some((l) => l.name === 'Adira Tebet'));
+
+  // 4. Master Client vacancy validation rejects out-of-scope clients, unconfigured positions, or invalid placements
+  const outOfScopeClient = validateMasterClientVacancySelection({
+    entities: INITIAL_ENTITIES,
+    assignedScopes: dinaScopes,
+    clientName: 'Kantor Pusat Operasional',
+    position: 'HR Operations Specialist',
+    placementId: 'plc-int-ho-1',
+    headcountNeeded: 2,
+    jobdesk: ['Kelola SDM'],
+    requirements: ['Min S1'],
+    mode: 'create',
+  });
+  assert.equal(outOfScopeClient.ok, false);
+
+  const invalidPosition = validateMasterClientVacancySelection({
+    entities: INITIAL_ENTITIES,
+    assignedScopes: dinaScopes,
+    clientName: 'Adira Finance — Penempatan Regional',
+    position: 'Posisi Sembarang Tidak Ada di Master',
+    placementId: 'plc-adr-1',
+    headcountNeeded: 3,
+    jobdesk: ['Tugas lapangan'],
+    requirements: ['SIM C'],
+    mode: 'create',
+  });
+  assert.equal(invalidPosition.ok, false);
+  assert.ok(invalidPosition.error?.includes('Master Admin'));
+
+  const invalidPlacement = validateMasterClientVacancySelection({
+    entities: INITIAL_ENTITIES,
+    assignedScopes: dinaScopes,
+    clientName: 'Adira Finance — Penempatan Regional',
+    position: 'Field Collection Officer',
+    placementId: 'plc-tidak-ada',
+    headcountNeeded: 3,
+    jobdesk: ['Tugas lapangan'],
+    requirements: ['SIM C'],
+    mode: 'create',
+  });
+  assert.equal(invalidPlacement.ok, false);
+  assert.ok(invalidPlacement.error?.includes('Lokasi penempatan'));
+
+  const validMasterVacancy = validateMasterClientVacancySelection({
+    entities: INITIAL_ENTITIES,
+    assignedScopes: dinaScopes,
+    clientName: 'Adira Finance — Penempatan Regional',
+    position: 'Field Collection Officer',
+    placementId: 'plc-adr-1',
+    headcountNeeded: 4,
+    jobdesk: ['Melakukan verifikasi dan penagihan lapangan'],
+    requirements: ['Memiliki SIM C aktif'],
+    mode: 'create',
+  });
+  assert.equal(validMasterVacancy.ok, true);
+  assert.equal(validMasterVacancy.matchedPlacement?.name, 'Adira Tebet');
+  assert.equal(validMasterVacancy.matchedPosition?.department, 'Collection & Recovery Regional');
+
+  // 5. Applicant WA & Email URL builders produce valid links for Pipeline & Interview stages
+  const sariProfile = INITIAL_APPLICANT_PROFILES[0];
+  const sariInterviewApp = INITIAL_JOB_APPLICATIONS[0];
+  const sariVacancy = INITIAL_VACANCIES.find((v) => v.id === sariInterviewApp.vacancyId);
+
+  const sariWaInterview = buildApplicantWhatsappUrl(
+    sariProfile,
+    sariInterviewApp,
+    sariVacancy,
+    'interview'
+  );
+  const sariMailInterview = buildApplicantMailtoUrl(
+    sariProfile,
+    sariInterviewApp,
+    sariVacancy,
+    'interview'
+  );
+  assert.ok(sariWaInterview.startsWith('https://wa.me/6281294550112?text='));
+  assert.ok(decodeURIComponent(sariWaInterview).includes('Wawancara'));
+  assert.ok(sariMailInterview.startsWith(`mailto:${sariProfile.email}?subject=`));
+  assert.ok(decodeURIComponent(sariMailInterview).includes('Undangan Interview'));
+
+  const sariWaDocs = buildApplicantWhatsappUrl(
+    sariProfile,
+    sariInterviewApp,
+    sariVacancy,
+    'documents'
+  );
+  assert.ok(decodeURIComponent(sariWaDocs).includes('Kelengkapan profil'));
+});
+
+test('Auto-enroll & auto-clock-in helpers trigger hands-free completion only when all gates pass and prevent duplicate runs', () => {
+  // 1. Auto-enroll requires ready camera, model, single face, blink done, descriptor, no prior trigger, no error
+  assert.equal(
+    canAutoCompleteEnrollment({
+      cameraReady: true,
+      modelReady: true,
+      liveFaceCount: 1,
+      blinkDone: false,
+      descriptorLength: 20,
+      alreadyTriggered: false,
+      hasError: false,
+    }),
+    false
+  );
+  assert.equal(
+    canAutoCompleteEnrollment({
+      cameraReady: true,
+      modelReady: true,
+      liveFaceCount: 1,
+      blinkDone: true,
+      descriptorLength: 20,
+      alreadyTriggered: false,
+      hasError: false,
+    }),
+    true
+  );
+  assert.equal(
+    canAutoCompleteEnrollment({
+      cameraReady: true,
+      modelReady: true,
+      liveFaceCount: 1,
+      blinkDone: true,
+      descriptorLength: 20,
+      alreadyTriggered: true,
+      hasError: false,
+    }),
+    false
+  );
+  assert.equal(
+    canAutoCompleteEnrollment({
+      cameraReady: true,
+      modelReady: true,
+      liveFaceCount: 1,
+      blinkDone: true,
+      descriptorLength: 20,
+      alreadyTriggered: false,
+      hasError: true,
+    }),
+    false
+  );
+
+  // 2. Auto-attendance requires all 4 anti-spoof gates to pass (verified phase + >=82% match)
+  const pendingState = createInitialLivenessState(true);
+  assert.equal(
+    canAutoCompleteAttendance({
+      cameraReady: true,
+      modelReady: true,
+      isEnrolled: true,
+      livenessState: pendingState,
+      liveFaceCount: 1,
+      alreadyTriggered: false,
+      hasError: false,
+    }),
+    false
+  );
+
+  const verifiedState = {
+    ...pendingState,
+    phase: 'verified' as const,
+    blinkCompleted: true,
+    headTurnCompleted: true,
+    lastMatchScore: 93,
+  };
+  assert.equal(
+    canAutoCompleteAttendance({
+      cameraReady: true,
+      modelReady: true,
+      isEnrolled: true,
+      livenessState: verifiedState,
+      liveFaceCount: 1,
+      alreadyTriggered: false,
+      hasError: false,
+    }),
+    true
+  );
+  assert.equal(
+    canAutoCompleteAttendance({
+      cameraReady: true,
+      modelReady: true,
+      isEnrolled: true,
+      livenessState: verifiedState,
+      liveFaceCount: 2,
+      alreadyTriggered: false,
+      hasError: false,
+    }),
+    false
+  );
+  assert.equal(
+    canAutoCompleteAttendance({
+      cameraReady: true,
+      modelReady: true,
+      isEnrolled: true,
+      livenessState: verifiedState,
+      liveFaceCount: 1,
+      alreadyTriggered: true,
+      hasError: false,
+    }),
+    false
+  );
+});
+
+test('PKWT lifecycle helpers resolve contract sequence, read-only lock, and non-auto PKWT extension drafts', () => {
+  const nadiaEmp = INITIAL_EMPLOYEES[1];
+  assert.equal(resolveEmployeeContractSequenceLabel(nadiaEmp), 'PKWT Ke-1');
+  assert.equal(resolveLatestContractSignatureStatus(nadiaEmp), 'Sudah TTD Digital');
+
+  const pkwttEmp = INITIAL_EMPLOYEES[0];
+  assert.equal(resolveEmployeeContractSequenceLabel(pkwttEmp), 'PKWTT (Tetap)');
+
+  // Read-only rules: employee is ALWAYS read-only; signed contract is ALWAYS read-only even for admin
+  assert.equal(
+    isPkwtModalReadOnly({ viewerRole: 'employee', signatureStatus: 'Menunggu TTD Karyawan' }),
+    true
+  );
+  assert.equal(
+    isPkwtModalReadOnly({ viewerRole: 'admin', signatureStatus: 'Menunggu TTD Karyawan' }),
+    false
+  );
+  assert.equal(
+    isPkwtModalReadOnly({ viewerRole: 'admin', signatureStatus: 'Sudah TTD Digital' }),
+    true
+  );
+  assert.equal(isContractSignedLocked('Sudah TTD Digital'), true);
+  assert.equal(isContractSignedLocked('Sudah Upload TTD Manual'), true);
+  assert.equal(isContractSignedLocked('Selesai / Digantikan'), true);
+  assert.equal(isContractSignedLocked('Menunggu TTD Karyawan'), false);
+
+  assert.equal(
+    canSignContractHistoryItem({ contractType: 'PKWT', signatureStatus: 'Menunggu TTD Karyawan' }),
+    true
+  );
+  assert.equal(
+    canSignContractHistoryItem({ contractType: 'PKWT', signatureStatus: 'Sudah TTD Digital' }),
+    false
+  );
+  assert.equal(
+    canSignContractHistoryItem({ contractType: 'PKWTT', signatureStatus: 'Menunggu TTD Karyawan' }),
+    false
+  );
+
+  // Extension creates PKWT Ke-2 (+6 months) with Menunggu TTD Karyawan and NO auto-signature attached
+  const extDraft = buildExtendedPkwtContractDraft({
+    employee: {
+      ...nadiaEmp,
+      savedSignatureDataUrl: 'data:image/png;base64,FAKE_SAVED_SIG',
+    } as typeof nadiaEmp,
+    months: 6,
+    nowMs: 1700000000000,
+  });
+  assert.equal(extDraft.sequenceNumber, 2);
+  assert.equal(extDraft.sequenceLabel, 'PKWT Ke-2');
+  assert.equal(extDraft.nextStartDate, '2026-12-01');
+  assert.equal(extDraft.nextEndDate, '2027-06-01');
+  assert.equal(extDraft.nextContractNumber, 'PKWT-CLN-2025/089-EXT2');
+  assert.equal(extDraft.newHistoryItem.signatureStatus, 'Menunggu TTD Karyawan');
+  assert.equal(extDraft.newHistoryItem.employeeSignatureDataUrl, undefined);
+
+  // Extended employee resolves PKWT Ke-2 & Menunggu TTD Karyawan even if PKWT Ke-1 was signed
+  const extendedEmp = {
+    ...nadiaEmp,
+    contractNumber: extDraft.nextContractNumber,
+    contractEndDate: extDraft.nextEndDate,
+    contractHistory: [
+      ...(nadiaEmp.contractHistory ?? []).map((h) => ({
+        ...h,
+        signatureStatus: 'Selesai / Digantikan' as const,
+      })),
+      extDraft.newHistoryItem,
+    ],
+  };
+  assert.equal(resolveEmployeeContractSequenceLabel(extendedEmp), 'PKWT Ke-2');
+  assert.equal(resolveLatestContractSignatureStatus(extendedEmp), 'Menunggu TTD Karyawan');
+
+  // buildDefaultPkwtPayload respects Super Admin signatory settings & uses extended contract period dates
+  const extendedPayload = buildDefaultPkwtPayload(
+    {
+      ...INITIAL_CONTRACTS[0],
+      contractNumber: extDraft.nextContractNumber,
+      startDate: '01 Des 2026',
+      endDate: '01 Jun 2027',
+    },
+    extendedEmp,
+    {
+      companyName: 'PT SWAPRO INTERNATIONAL',
+      pkwtSignatoryName: 'Hendra Wijaya, S.H.',
+      pkwtSignatoryTitle: 'Head of People & Legal',
+    }
+  );
+  assert.equal(extendedPayload.signerName, 'Hendra Wijaya, S.H.');
+  assert.equal(extendedPayload.signerPosition, 'Head of People & Legal');
+  assert.equal(extendedPayload.startDateText, '1 Desember 2026');
+  assert.equal(extendedPayload.endDateText, '1 Juni 2027');
+  assert.equal(extendedPayload.employeeSignatureDataUrl, undefined);
+});
+
+test('BPJS digital card helpers format card numbers and build valid JKN-KIS & KPJ SVG data URLs', () => {
+  assert.equal(formatBpjsKesDisplay('0002194058124'), '0002 1940 5812 4');
+  assert.equal(formatBpjsKesDisplay(''), 'Belum Terdaftar');
+  assert.equal(formatBpjsTkDisplay('25120948120'), '2512 0948 120');
+  assert.equal(formatBpjsTkDisplay(''), 'Belum Terdaftar');
+
+  const kesSvgUrl = buildDigitalBpjsCardSvgDataUrl('kesehatan', {
+    fullName: 'Nadia Kusuma',
+    employeeCode: 'OUT-318',
+    nik: '3171036108990003',
+    cardNumber: '0002194058124',
+    birthDateFormatted: '21 Agu 1999',
+    entityName: 'BAF — Layanan Operasional Cabang',
+    joinDateFormatted: '01 Des 2025',
+  });
+  assert.ok(kesSvgUrl.startsWith('data:image/svg+xml;charset=utf-8,'));
+  const decodedKes = decodeURIComponent(kesSvgUrl.replace('data:image/svg+xml;charset=utf-8,', ''));
+  assert.ok(decodedKes.includes('KARTU PESERTA JKN - KIS'));
+  assert.ok(decodedKes.includes('0002 1940 5812 4'));
+  assert.ok(decodedKes.includes('NADIA KUSUMA'));
+  assert.ok(decodedKes.includes('AKTIF TERDAFTAR'));
+
+  const tkEmptySvgUrl = buildDigitalBpjsCardSvgDataUrl('ketenagakerjaan', {
+    fullName: 'Tari Kartika',
+    employeeCode: 'ADR-001',
+    nik: '3174011206980001',
+    cardNumber: '',
+    birthDateFormatted: '12 Jun 1998',
+    entityName: 'Adira Finance — Penempatan Regional',
+    joinDateFormatted: '15 Nov 2026',
+  });
+  const decodedTk = decodeURIComponent(tkEmptySvgUrl.replace('data:image/svg+xml;charset=utf-8,', ''));
+  assert.ok(decodedTk.includes('KARTU PESERTA BPJS KETENAGAKERJAAN'));
+  assert.ok(decodedTk.includes('BELUM TERDAFTAR'));
+});
+
+test('buildLiveOperationalSnapshots aggregates live vacancies, candidates, contracts, leaves, and attendance per entity', () => {
+  const initialSnapshots = buildLiveOperationalSnapshots({
+    entities: INITIAL_ENTITIES,
+    vacancies: INITIAL_VACANCIES,
+    applications: INITIAL_JOB_APPLICATIONS,
+    contracts: INITIAL_CONTRACTS,
+    leaveAbsences: INITIAL_LEAVE_ABSENCES,
+    attendanceLogs: INITIAL_ATTENDANCE_LOGS,
+  });
+
+  const adira = initialSnapshots.find((s) => s.entityName === 'Adira Finance — Penempatan Regional');
+  assert.ok(adira);
+  assert.equal(adira.openPositions, 1); // vac-1
+  assert.equal(adira.activeCandidates, 1); // app-1
+
+  const baf = initialSnapshots.find((s) => s.entityName === 'BAF — Layanan Operasional Cabang');
+  assert.ok(baf);
+  assert.equal(baf.expiringContracts, 1); // ctr-1 (OUT-318 Nadia)
+  assert.equal(baf.attendanceRate, '100,0%');
+
+  const fif = initialSnapshots.find((s) => s.entityName === 'FIFGROUP — Area Jawa Timur');
+  assert.ok(fif);
+  assert.equal(fif.attendanceRate, '0,0%'); // 1 Alpha log only
+
+  // When Recruiter opens a new vacancy & Pelamar submits a new application, snapshots update immediately
+  const updatedSnapshots = buildLiveOperationalSnapshots({
+    entities: INITIAL_ENTITIES,
+    vacancies: [
+      ...INITIAL_VACANCIES,
+      {
+        id: 'vac-live-extra',
+        clientName: 'Adira Finance — Penempatan Regional',
+        status: 'Mendesak',
+      },
+    ],
+    applications: [
+      ...INITIAL_JOB_APPLICATIONS,
+      {
+        vacancyId: 'vac-live-extra',
+        stage: 'Lamaran Masuk',
+        handedOffToOnboarding: false,
+      },
+    ],
+    contracts: INITIAL_CONTRACTS.map((c) =>
+      c.id === 'ctr-1' ? { ...c, status: 'Diperpanjang' as const } : c
+    ),
+    leaveAbsences: INITIAL_LEAVE_ABSENCES,
+    attendanceLogs: INITIAL_ATTENDANCE_LOGS,
+  });
+
+  const adiraAfter = updatedSnapshots.find(
+    (s) => s.entityName === 'Adira Finance — Penempatan Regional'
+  );
+  const bafAfter = updatedSnapshots.find(
+    (s) => s.entityName === 'BAF — Layanan Operasional Cabang'
+  );
+  assert.equal(adiraAfter?.openPositions, 2);
+  assert.equal(adiraAfter?.activeCandidates, 2);
+  assert.equal(bafAfter?.expiringContracts, 0);
+});
+
+test('cookieConsent helpers persist decisions, reject invalid payloads, and hide banner on dashboard views', () => {
+  const mem = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => mem.get(k) ?? null,
+    setItem: (k, v) => {
+      mem.set(k, v);
+    },
+    removeItem: (k) => {
+      mem.delete(k);
+    },
+  };
+
+  // Initially empty -> banner visible on landing & login, hidden on dashboard
+  assert.equal(loadCookieConsent(mockStorage), null);
+  assert.equal(shouldShowCookieBanner('landing', null), true);
+  assert.equal(shouldShowCookieBanner('login', null), true);
+  assert.equal(shouldShowCookieBanner('dashboard', null), false);
+
+  // Accept all
+  const allConsent = saveCookieConsent(
+    createAcceptAllConsent('2026-11-15T10:00:00.000Z'),
+    mockStorage
+  );
+  assert.equal(allConsent.version, COOKIE_CONSENT_VERSION);
+  assert.equal(allConsent.essential, true);
+  assert.equal(allConsent.preferences, true);
+  assert.equal(allConsent.analytics, true);
+  assert.equal(allConsent.decisionType, 'all');
+  assert.equal(shouldShowCookieBanner('landing', allConsent), false);
+
+  const loadedAll = loadCookieConsent(mockStorage);
+  assert.deepEqual(loadedAll, allConsent);
+
+  // Essential only
+  const essentialOnly = saveCookieConsent(
+    createEssentialOnlyConsent('2026-11-15T10:05:00.000Z'),
+    mockStorage
+  );
+  assert.equal(essentialOnly.preferences, false);
+  assert.equal(essentialOnly.analytics, false);
+  assert.equal(essentialOnly.decisionType, 'essential');
+
+  // Custom mixed preferences
+  const custom = saveCookieConsent(
+    createCustomConsent({ preferences: true, analytics: false }, '2026-11-15T10:10:00.000Z'),
+    mockStorage
+  );
+  assert.equal(custom.decisionType, 'custom');
+  assert.equal(custom.preferences, true);
+  assert.equal(custom.analytics, false);
+
+  // Custom matching all/none normalizes decisionType
+  assert.equal(createCustomConsent({ preferences: true, analytics: true }).decisionType, 'all');
+  assert.equal(
+    createCustomConsent({ preferences: false, analytics: false }).decisionType,
+    'essential'
+  );
+
+  // Corrupted or outdated payload is safely ignored
+  mockStorage.setItem(COOKIE_CONSENT_STORAGE_KEY, '{invalid-json');
+  assert.equal(loadCookieConsent(mockStorage), null);
+  assert.equal(
+    parseCookieConsentJson(
+      JSON.stringify({ ...allConsent, version: COOKIE_CONSENT_VERSION + 1 })
+    ),
+    null
+  );
+
+  clearCookieConsent(mockStorage);
+  assert.equal(loadCookieConsent(mockStorage), null);
+});
+
+test('All 5 primary swa-* accounts authenticate cleanly across full workspace seed arrays with password 1234', () => {
+  const cases: Array<{
+    identifier: string;
+    expectedRole: 'Master Admin' | 'Admin' | 'Rekruter' | 'Karyawan' | 'Pelamar';
+    expectedName: string;
+  }> = [
+    { identifier: 'swa-fathur', expectedRole: 'Master Admin', expectedName: 'Fathurrahman' },
+    { identifier: 'swa-ulan', expectedRole: 'Admin', expectedName: 'Ulan Rahmawati' },
+    { identifier: 'swa-rama', expectedRole: 'Rekruter', expectedName: 'Rama Wijaya' },
+    { identifier: 'swa-rudi', expectedRole: 'Karyawan', expectedName: 'Rudi Hartono' },
+    { identifier: 'swa-pelamar', expectedRole: 'Pelamar', expectedName: 'Sari Wulandari' },
+  ];
+
+  for (const item of cases) {
+    const res = authenticatePortalUser(
+      item.identifier,
+      '1234',
+      INITIAL_APPLICANT_PROFILES,
+      INITIAL_EMPLOYEES,
+      INITIAL_USERS
+    );
+    assert.equal(res.ok, true, `Expected ${item.identifier} to authenticate`);
+    assert.equal(res.user?.role, item.expectedRole);
+    assert.equal(res.user?.name, item.expectedName);
+  }
+});
+
 

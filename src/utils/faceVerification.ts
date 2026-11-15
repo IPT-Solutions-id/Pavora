@@ -400,3 +400,42 @@ export function summarizeAttendanceGates(
       gate1Enrolled && gate2SingleLiveFace && gate3LivenessPassed && gate4FaceMatched,
   };
 }
+
+export function canAutoCompleteEnrollment(params: {
+  cameraReady: boolean;
+  modelReady: boolean;
+  liveFaceCount: number;
+  blinkDone: boolean;
+  descriptorLength: number;
+  alreadyTriggered: boolean;
+  hasError: boolean;
+}): boolean {
+  if (params.alreadyTriggered || params.hasError) return false;
+  return (
+    params.cameraReady &&
+    params.modelReady &&
+    params.liveFaceCount === 1 &&
+    params.blinkDone &&
+    params.descriptorLength > 0
+  );
+}
+
+export function canAutoCompleteAttendance(params: {
+  cameraReady: boolean;
+  modelReady: boolean;
+  isEnrolled: boolean;
+  livenessState: ActiveLivenessState;
+  liveFaceCount: number;
+  alreadyTriggered: boolean;
+  hasError: boolean;
+}): boolean {
+  if (params.alreadyTriggered || params.hasError) return false;
+  if (!params.cameraReady || !params.modelReady) return false;
+  const gates = summarizeAttendanceGates(
+    params.isEnrolled,
+    params.livenessState,
+    params.liveFaceCount
+  );
+  return gates.allGatesPassed;
+}
+

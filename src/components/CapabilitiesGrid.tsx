@@ -1,6 +1,6 @@
 import React from 'react';
-import { Check } from 'lucide-react';
-import { CAPABILITY_MODULES, CapabilityModule } from '../data/hrisData';
+import { ArrowRight, Check } from 'lucide-react';
+import { CAPABILITY_MODULES, CapabilityModule, END_TO_END_WORKFLOW } from '../data/hrisData';
 
 function getSurfaceClasses(surface: CapabilityModule['surface']) {
   switch (surface) {
@@ -121,6 +121,51 @@ export const CapabilitiesGrid: React.FC = () => {
               </article>
             );
           })}
+        </div>
+
+        {/* 5-Stage End-to-End Connected Portal Workflow Strip */}
+        <div className="mt-10 bg-white border border-[#E2E8F0] rounded-[6px] p-6 sm:p-7">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-5 mb-5 border-b border-[#E2E8F0]">
+            <div>
+              <p className="font-jakarta text-xs font-semibold text-[#1468E8]">
+                ALUR KERJA TERINTEGRASI 5 PORTAL
+              </p>
+              <h3 className="text-lg font-bold text-[#102B69] mt-0.5">
+                Dari Portal Pelamar hingga Tata Kelola Master Admin
+              </h3>
+            </div>
+            <span className="text-xs font-medium text-[#64748B]">
+              Tanpa input ulang data kandidat ke karyawan aktif
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            {END_TO_END_WORKFLOW.map((item, idx) => (
+              <div
+                key={item.step}
+                className="bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] p-4 flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="font-jakarta text-xs font-bold text-[#FF7A1A] tabular-nums">
+                      {item.step}
+                    </span>
+                    {idx < END_TO_END_WORKFLOW.length - 1 ? (
+                      <ArrowRight
+                        className="w-3.5 h-3.5 text-[#94A3B8] hidden lg:block"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                  </div>
+                  <p className="text-xs font-semibold text-[#1468E8] mb-1">{item.role}</p>
+                  <h4 className="text-sm font-bold text-[#102B69] mb-1.5 leading-snug">
+                    {item.title}
+                  </h4>
+                  <p className="text-xs text-[#64748B] leading-relaxed">{item.summary}</p>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </section>

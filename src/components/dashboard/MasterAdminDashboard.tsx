@@ -58,7 +58,12 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({
   const actorLabel = `${user.name} (${user.id})`;
   const pendingCount = countPendingApprovals(store.approvals);
   const pendingLeaveCount = store.leaveAbsences.filter((l) => l.status === 'Menunggu').length;
-  const adminNotifications = store.notifications.filter((n) => n.recipientRole !== 'employee');
+  const adminNotifications = store.notifications.filter(
+    (n) =>
+      n.recipientRole !== 'employee' &&
+      n.recipientRole !== 'recruiter' &&
+      n.recipientRole !== 'applicant'
+  );
   const activeMenuItem = MENU_ITEMS.find((m) => m.id === activeMenu) ?? MENU_ITEMS[0];
 
   const selectMenu = (id: DashboardMenuId) => {
@@ -198,8 +203,19 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({
               notifications={adminNotifications}
               onSelectNotification={(notif) => {
                 store.markNotificationRead(notif.id);
-                if (notif.type === 'leave-submitted' || notif.targetMenu === 'monitoring') {
+                if (notif.type === 'pkwt-extension-requested') {
+                  setMonitoringTab('pkwt');
+                  selectMenu('monitoring');
+                } else if (notif.type === 'approval-pending' || notif.targetMenu === 'overview') {
+                  selectMenu('overview');
+                } else if (
+                  notif.type === 'leave-submitted' ||
+                  notif.type === 'alpha-clarified'
+                ) {
                   setMonitoringTab('leave-alpha');
+                  selectMenu('monitoring');
+                } else if (notif.targetMenu === 'monitoring') {
+                  setMonitoringTab('summary');
                   selectMenu('monitoring');
                 } else {
                   selectMenu('employees');
@@ -255,6 +271,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({
               employees={store.employees}
               entities={store.entities}
               departments={store.departments}
+              settings={store.settings}
               onCreateEmployee={(data) => store.createEmployee(data, actorLabel)}
               onUpdateEmployee={(id, data) => store.updateEmployee(id, data, actorLabel)}
               onDeleteEmployee={(id) => store.deleteEmployee(id, actorLabel)}
@@ -319,6 +336,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({
               contracts={store.contracts}
               employees={store.employees}
               policy={store.policy}
+              settings={store.settings}
               initialTab={monitoringTab}
               onTabChange={setMonitoringTab}
               onApproveLeave={(id) => store.approveLeave(id, actorLabel)}

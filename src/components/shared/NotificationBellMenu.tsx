@@ -49,18 +49,25 @@ export const NotificationBellMenu: React.FC<NotificationBellMenuProps> = ({
   const renderIcon = (type: WorkspaceNotificationRecord['type']) => {
     switch (type) {
       case 'new-employee':
+      case 'new-application':
         return <UserPlus className="w-4 h-4 text-[#1468E8] shrink-0" aria-hidden="true" />;
       case 'pkwt-signed':
+      case 'applicant-ready':
         return <FileCheck2 className="w-4 h-4 text-[#16A36A] shrink-0" aria-hidden="true" />;
       case 'pkwt-expiring':
       case 'pkwt-pending-sign':
+      case 'pkwt-extension-requested':
         return <FileWarning className="w-4 h-4 text-[#B87D00] shrink-0" aria-hidden="true" />;
       case 'leave-submitted':
+      case 'interview-scheduled':
+      case 'alpha-clarified':
         return <CalendarClock className="w-4 h-4 text-[#FF7A1A] shrink-0" aria-hidden="true" />;
       case 'leave-approved':
         return <CalendarCheck2 className="w-4 h-4 text-[#16A36A] shrink-0" aria-hidden="true" />;
       case 'leave-rejected':
         return <CalendarX2 className="w-4 h-4 text-[#DC3545] shrink-0" aria-hidden="true" />;
+      case 'application-updated':
+      case 'approval-pending':
       default:
         return <Sparkles className="w-4 h-4 text-[#102B69] shrink-0" aria-hidden="true" />;
     }

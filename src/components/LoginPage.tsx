@@ -355,7 +355,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                               setLoginErrors((prev) => ({ ...prev, identifier: undefined }));
                             }
                           }}
-                          placeholder="EMP-1024 atau nama@perusahaan.co.id"
+                          placeholder="swa-fathur, EMP-1024, atau nama@perusahaan.co.id"
                           aria-invalid={Boolean(loginErrors.identifier)}
                           className={`w-full px-3.5 py-2.5 text-sm bg-white border rounded-[4px] text-[#172033] placeholder:text-[#94A3B8] focus:outline-none focus:ring-2 focus:ring-[#1468E8]/25 focus:border-[#1468E8] ${
                             loginErrors.identifier ? 'border-[#DC3545]' : 'border-[#E2E8F0]'

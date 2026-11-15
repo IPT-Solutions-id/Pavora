@@ -187,6 +187,7 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
     const matchesQuery =
       !q ||
       emp.employeeCode.toLowerCase().includes(q) ||
+      (emp.loginAlias ?? '').toLowerCase().includes(q) ||
       emp.fullName.toLowerCase().includes(q) ||
       emp.email.toLowerCase().includes(q) ||
       emp.whatsappNumber.toLowerCase().includes(q) ||
@@ -1055,6 +1056,11 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                             <p className="text-xs font-bold text-[#102B69] font-mono tabular-nums">
                               {emp.employeeCode}
                             </p>
+                            {emp.loginAlias && (
+                              <p className="text-[11px] text-[#64748B] font-mono">
+                                Login: {emp.loginAlias}
+                              </p>
+                            )}
                             <div className="flex flex-wrap items-center gap-1 text-[11px] mt-0.5">
                               {emp.isNewHire && (
                                 <span className="font-bold text-[#1468E8]">Baru</span>

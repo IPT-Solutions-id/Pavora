@@ -1,4 +1,8 @@
-import type { ContractRecord, EmployeeRecord } from '../data/masterAdminData.ts';
+import type {
+  ContractRecord,
+  EmployeeRecord,
+  SystemSettingsConfig,
+} from '../data/masterAdminData.ts';
 
 export interface PkwtTextRun {
   text: string;
@@ -252,14 +256,25 @@ function formatDepartmentLabel(rawDepartment: string, position: string): string 
 
 export function buildDefaultPkwtPayload(
   contract: ContractRecord,
-  employee?: EmployeeRecord
+  employee?: EmployeeRecord,
+  settings?: Pick<SystemSettingsConfig, 'companyName' | 'pkwtSignatoryName' | 'pkwtSignatoryTitle'>
 ): PkwtDocumentPayload {
   const entityName = employee?.entityName || contract.entityName;
   const employmentType = employee?.employmentType || contract.employmentType;
   const clientDefaults = resolveClientDefaults(entityName, employmentType);
 
-  const startIso = parseFlexibleDateToIso(employee?.joinDate || contract.startDate) || '2026-01-02';
-  const endIso = parseFlexibleDateToIso(employee?.contractEndDate || contract.endDate) || '2027-01-01';
+  const matchingHistory =
+    employee?.contractHistory?.find((h) => h.contractNumber === contract.contractNumber) ??
+    employee?.contractHistory?.[employee.contractHistory.length - 1];
+
+  const startIso =
+    parseFlexibleDateToIso(
+      matchingHistory?.startDate || contract.startDate || employee?.joinDate || ''
+    ) || '2026-01-02';
+  const endIso =
+    parseFlexibleDateToIso(
+      matchingHistory?.endDate || contract.endDate || employee?.contractEndDate || ''
+    ) || '2027-01-01';
 
   const startDateText = formatIndonesianDateLong(startIso);
   const endDateText = formatIndonesianDateLong(endIso);
@@ -271,12 +286,8 @@ export function buildDefaultPkwtPayload(
   const gender: 'Laki-Laki' | 'Perempuan' =
     rawGender.toLowerCase() === 'perempuan' ? 'Perempuan' : 'Laki-Laki';
 
-  const position = employee?.position || 'Staff Operasional';
+  const position = matchingHistory?.position || employee?.position || 'Staff Operasional';
   const departmentDivision = formatDepartmentLabel(employee?.department || '', position);
-
-  const matchingHistory =
-    employee?.contractHistory?.find((h) => h.contractNumber === contract.contractNumber) ??
-    employee?.contractHistory?.[employee.contractHistory.length - 1];
 
   const resolvedPlacement =
     employee?.placementName && employee?.placementArea
@@ -285,8 +296,8 @@ export function buildDefaultPkwtPayload(
 
   return {
     pkwtNumber: contract.contractNumber,
-    signerName: 'Farid Usman, S.Psi.',
-    signerPosition: 'Direktur Operasional',
+    signerName: settings?.pkwtSignatoryName?.trim() || 'Farid Usman, S.Psi.',
+    signerPosition: settings?.pkwtSignatoryTitle?.trim() || 'Direktur Operasional',
     clientLegalName: clientDefaults.clientLegalName,
     employeeName: employee?.fullName || contract.employeeName,
     ktpNumber: employee?.nik || '3174010101990001',
