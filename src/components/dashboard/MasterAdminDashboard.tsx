@@ -52,7 +52,9 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({
   onLogout,
 }) => {
   const [activeMenu, setActiveMenu] = useState<DashboardMenuId>('overview');
-  const [monitoringTab, setMonitoringTab] = useState<'summary' | 'attendance' | 'leave-alpha' | 'pkwt'>('summary');
+  const [monitoringTab, setMonitoringTab] = useState<
+    'summary' | 'attendance' | 'leave-alpha' | 'pkwt' | 'activity-reports'
+  >('summary');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const actorLabel = `${user.name} (${user.id})`;
@@ -206,13 +208,20 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({
                 if (notif.type === 'pkwt-extension-requested') {
                   setMonitoringTab('pkwt');
                   selectMenu('monitoring');
-                } else if (notif.type === 'approval-pending' || notif.targetMenu === 'overview') {
+                } else if (
+                  notif.type === 'payroll-submitted' ||
+                  notif.type === 'approval-pending' ||
+                  notif.targetMenu === 'overview'
+                ) {
                   selectMenu('overview');
                 } else if (
                   notif.type === 'leave-submitted' ||
                   notif.type === 'alpha-clarified'
                 ) {
                   setMonitoringTab('leave-alpha');
+                  selectMenu('monitoring');
+                } else if (notif.type === 'activity-report-updated') {
+                  setMonitoringTab('activity-reports');
                   selectMenu('monitoring');
                 } else if (notif.targetMenu === 'monitoring') {
                   setMonitoringTab('summary');
@@ -335,6 +344,7 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({
               leaveAbsences={store.leaveAbsences}
               contracts={store.contracts}
               employees={store.employees}
+              activityReports={store.activityReports}
               policy={store.policy}
               settings={store.settings}
               initialTab={monitoringTab}
@@ -349,7 +359,10 @@ export const MasterAdminDashboard: React.FC<MasterAdminDashboardProps> = ({
             <SettingsPanel
               settings={store.settings}
               activeEntityCount={store.entities.filter((e) => e.status === 'Aktif').length}
-              activeEmployeeCount={store.employees.filter((e) => e.status !== 'Nonaktif').length}
+              activeEmployeeCount={
+                store.employees.filter((e) => e.status !== 'Nonaktif' && e.status !== 'Resign')
+                  .length
+              }
               onSaveSettings={(nextSettings) => store.saveSettings(nextSettings, actorLabel)}
               onResetSimulation={() => store.resetWorkspaceSimulation(actorLabel)}
             />

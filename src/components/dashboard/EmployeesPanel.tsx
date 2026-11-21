@@ -14,9 +14,11 @@ import {
   calculateDaysRemaining,
   countUploadedDocuments,
   filterEmployees,
+  formatEmployeeHandledClientsSummary,
   formatIndonesianDate,
   getContractEocIndicator,
   maskSensitiveNumber,
+  summarizeEmployeeStatusCounts,
 } from '../../data/masterAdminData';
 import { isValidMapsUrl } from '../../utils/mapsUrl';
 import { EmployeeModal } from './EmployeeModal';
@@ -76,6 +78,15 @@ export const EmployeesPanel: React.FC<EmployeesPanelProps> = ({
     entityFilter
   );
 
+  const scopedEmployeesForCounts = filterEmployees(
+    employees,
+    '',
+    employmentFilter,
+    'Semua',
+    entityFilter
+  );
+  const statusCounts = summarizeEmployeeStatusCounts(scopedEmployeesForCounts);
+
   const internalCount = employees.filter((e) => e.employmentType === 'Internal').length;
   const clientCount = employees.filter((e) => e.employmentType === 'Penempatan Klien').length;
   const pkwtCount = employees.filter((e) => e.contractType === 'PKWT').length;
@@ -114,6 +125,46 @@ export const EmployeesPanel: React.FC<EmployeesPanelProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Separated Active vs Inactive Employee Cards */}
+      <div
+        data-testid="employees-status-summary"
+        className="grid grid-cols-1 sm:grid-cols-2 gap-4"
+      >
+        <div
+          data-testid="employees-active-card"
+          className="bg-white border border-[#E2E8F0] rounded-[6px] p-4"
+        >
+          <p className="text-xs font-semibold text-[#64748B]">Karyawan Aktif</p>
+          <p className="text-2xl font-extrabold text-[#16A36A] tabular-nums mt-1">
+            {statusCounts.activeWorkingCount} Orang
+          </p>
+          <p className="text-xs text-[#64748B] mt-1 tabular-nums">
+            <strong className="text-[#16A36A]">{statusCounts.activeCount} Aktif</strong> ·{' '}
+            <strong className="text-[#B87D00]">{statusCounts.probationCount} Probation</strong> ·
+            Masuk hitungan karyawan aktif
+          </p>
+        </div>
+
+        <div
+          data-testid="employees-inactive-card"
+          className="bg-white border border-[#E2E8F0] rounded-[6px] p-4"
+        >
+          <p className="text-xs font-semibold text-[#64748B]">Karyawan Nonaktif</p>
+          <p
+            className={`text-2xl font-extrabold tabular-nums mt-1 ${
+              statusCounts.inactiveOrResignedCount > 0 ? 'text-[#DC3545]' : 'text-[#102B69]'
+            }`}
+          >
+            {statusCounts.inactiveOrResignedCount} Orang
+          </p>
+          <p className="text-xs text-[#64748B] mt-1 tabular-nums">
+            <strong className="text-[#DC3545]">{statusCounts.resignCount} Resign</strong> ·{' '}
+            <strong className="text-[#475569]">{statusCounts.nonaktifCount} Nonaktif</strong> ·
+            Tidak masuk hitungan aktif
+          </p>
+        </div>
+      </div>
+
       {/* 4-column Employee Database Summary */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <div className="bg-white border border-[#E2E8F0] rounded-[6px] p-4">
@@ -263,7 +314,16 @@ export const EmployeesPanel: React.FC<EmployeesPanelProps> = ({
 
             <div className="inline-flex flex-wrap p-1 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] gap-0.5">
               {(
-                ['Semua', 'PKWT', 'PKWTT', 'Probation', 'Segera Habis', 'Baru'] as const
+                [
+                  'Semua',
+                  'PKWT',
+                  'PKWTT',
+                  'Probation',
+                  'Resign',
+                  'Nonaktif',
+                  'Segera Habis',
+                  'Baru',
+                ] as const
               ).map((mode) => (
                 <button
                   key={mode}
@@ -379,6 +439,10 @@ export const EmployeesPanel: React.FC<EmployeesPanelProps> = ({
                             <span>
                               {emp.placementName || emp.placementLocation}
                               {emp.placementArea ? ` · ${emp.placementArea}` : ''}
+                              {emp.employmentType === 'Penempatan Klien' &&
+                              (emp.additionalBranches ?? []).length > 0
+                                ? ` (+${emp.additionalBranches?.length} cabang)`
+                                : ''}
                             </span>
                             {emp.placementMapsUrl && isValidMapsUrl(emp.placementMapsUrl) && (
                               <a
@@ -393,8 +457,20 @@ export const EmployeesPanel: React.FC<EmployeesPanelProps> = ({
                             )}
                           </p>
                         )}
+                        {emp.employmentType === 'Internal' &&
+                          (emp.handledClients ?? []).length > 0 && (
+                            <p
+                              data-testid={`emp-handled-summary-${emp.employeeCode}`}
+                              className="text-[11px] text-[#1468E8] font-medium mt-0.5"
+                            >
+                              Handle: {formatEmployeeHandledClientsSummary(emp).join(' · ')}
+                            </p>
+                          )}
                         <p className="text-[11px] text-[#64748B] mt-0.5">
-                          {emp.employmentType} ·{' '}
+                          {emp.employmentType === 'Internal'
+                            ? 'Internal'
+                            : 'Eksternal (Penempatan Klien)'}{' '}
+                          ·{' '}
                           <span
                             className={`font-semibold ${
                               emp.status === 'Aktif'
@@ -405,6 +481,9 @@ export const EmployeesPanel: React.FC<EmployeesPanelProps> = ({
                             }`}
                           >
                             {emp.status}
+                            {emp.status === 'Resign' && emp.resignDate
+                              ? ` (${formatIndonesianDate(emp.resignDate)})`
+                              : ''}
                           </span>
                         </p>
                       </td>

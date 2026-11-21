@@ -5,6 +5,7 @@ import {
   CalendarCheck2,
   Camera,
   CheckCircle2,
+  ClipboardList,
   Clock,
   ExternalLink,
   Eye,
@@ -36,7 +37,6 @@ import {
   DOCUMENT_CHECKLIST_ITEMS,
   EmployeeDocumentsRecord,
   LeaveAbsenceRecord,
-  buildSkdCertificatePreviewDataUrl,
   calculateDaysRemaining,
   calculateEmployeeLeaveQuotaSummary,
   countUploadedDocuments,
@@ -58,10 +58,15 @@ import { BpjsCardsSection } from '../shared/BpjsCardsSection';
 import { DigitalSignaturePad } from '../shared/DigitalSignaturePad';
 import { NotificationBellMenu } from '../shared/NotificationBellMenu';
 import { FaceAttendanceCameraModal } from './FaceAttendanceCameraModal';
+import { SlipGajiModal } from '../payroll/SlipGajiModal';
+import { PayrollSlipRecord } from '../../utils/payrollCalculator';
+import { EmployeeActivityPanel } from './EmployeeActivityPanel';
+import { EmployeeLeavePanel } from './EmployeeLeavePanel';
 
 export type EmployeeMenuId =
   | 'emp-home'
   | 'emp-attendance'
+  | 'emp-activity'
   | 'emp-leave'
   | 'emp-contract'
   | 'emp-signature'
@@ -82,6 +87,7 @@ interface EmployeeNavItem {
 const EMPLOYEE_MENU_ITEMS: EmployeeNavItem[] = [
   { id: 'emp-home', label: 'Beranda', icon: Home },
   { id: 'emp-attendance', label: 'Presensi', icon: ScanFace },
+  { id: 'emp-activity', label: 'Laporan Kegiatan', icon: ClipboardList },
   { id: 'emp-leave', label: 'Cuti & Izin', icon: CalendarCheck2 },
   { id: 'emp-contract', label: 'Kontrak & Slip', icon: Wallet },
   { id: 'emp-signature', label: 'Menu TTD', icon: PenTool },
@@ -116,6 +122,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
 
   // PKWT Modal & Digital Signature state
   const [pkwtPreviewTarget, setPkwtPreviewTarget] = useState<ContractHistoryItem | 'active' | null>(null);
+  const [selectedSlipModal, setSelectedSlipModal] = useState<PayrollSlipRecord | null>(null);
   const [pkwtSignatureDataUrl, setPkwtSignatureDataUrl] = useState('');
   const [pkwtConsentChecked, setPkwtConsentChecked] = useState(false);
   const [pkwtSignFeedback, setPkwtSignFeedback] = useState<{ ok: boolean; text: string } | null>(null);
@@ -123,16 +130,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
   const [savedSigFeedback, setSavedSigFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [signSourceMode, setSignSourceMode] = useState<'saved' | 'draw'>('saved');
 
-  // Leave request form state
-  const [leaveType, setLeaveType] = useState<'Cuti Tahunan' | 'Izin Sakit' | 'Izin Keperluan'>(
-    'Cuti Tahunan'
-  );
-  const [leaveDateRange, setLeaveDateRange] = useState('');
-  const [leaveDaysCount, setLeaveDaysCount] = useState('1');
-  const [leaveReason, setLeaveReason] = useState('');
-  const [skdFileName, setSkdFileName] = useState('');
-  const [skdFileDataUrl, setSkdFileDataUrl] = useState('');
-  const [doctorOrClinicName, setDoctorOrClinicName] = useState('');
+  // Leave feedback & SKD preview state
   const [leaveFeedback, setLeaveFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [previewSkdLeave, setPreviewSkdLeave] = useState<LeaveAbsenceRecord | null>(null);
 
@@ -282,6 +280,17 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
   );
   const docProgress = countUploadedDocuments(employee.documents);
 
+  const myPublishedSlips = useMemo(
+    () =>
+      store.payrollSlips.filter(
+        (s) =>
+          s.status === 'Disetujui' &&
+          (s.employeeId === employee.id ||
+            s.employeeCode.toLowerCase() === employee.employeeCode.toLowerCase())
+      ),
+    [store.payrollSlips, employee.id, employee.employeeCode]
+  );
+
   const baseSalary = employee.salaryMonthly ?? 5350000;
   const hadirCount = myAttendanceLogs.filter((l) => l.status === 'Hadir').length;
   const telatCount = myAttendanceLogs.filter((l) => l.status === 'Telat').length;
@@ -350,75 +359,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
     setCameraMode(targetMode);
   };
 
-  const handleSkdFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setSkdFileName(file.name);
-    if (file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          setSkdFileDataUrl(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    } else {
-      setSkdFileDataUrl(
-        buildSkdCertificatePreviewDataUrl({
-          employeeName: employee.fullName,
-          employeeCode: employee.employeeCode,
-          dateRange: leaveDateRange.trim() || todayLabel,
-          daysCount: Math.max(1, Number(leaveDaysCount) || 1),
-          reason: leaveReason.trim() || 'Istirahat medis sesuai surat keterangan dokter',
-          doctorOrClinicName: doctorOrClinicName.trim() || 'Klinik Rekanan Medika',
-        })
-      );
-    }
-  };
 
-  const handleAttachVerifiedClinicSkd = () => {
-    const sanitizedName = employee.fullName.replace(/\s+/g, '_');
-    const generatedFileName = `SKD_Klinik_Medika_${sanitizedName}_${employee.employeeCode}.svg`;
-    const clinicLabel = doctorOrClinicName.trim() || 'Klinik Pratama Medika — dr. Hendra Wijaya';
-    setDoctorOrClinicName(clinicLabel);
-    setSkdFileName(generatedFileName);
-    setSkdFileDataUrl(
-      buildSkdCertificatePreviewDataUrl({
-        employeeName: employee.fullName,
-        employeeCode: employee.employeeCode,
-        dateRange: leaveDateRange.trim() || todayLabel,
-        daysCount: Math.max(1, Number(leaveDaysCount) || 1),
-        reason: leaveReason.trim() || 'Istirahat sakit rawat jalan sesuai pemeriksaan dokter',
-        doctorOrClinicName: clinicLabel,
-      })
-    );
-  };
-
-  const handleLeaveSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const res = store.submitEmployeeLeaveRequest(
-      employee.employeeCode,
-      {
-        type: leaveType,
-        dateRange: leaveDateRange,
-        daysCount: Number(leaveDaysCount) || 1,
-        reason: leaveReason,
-        skdFileName: leaveType === 'Izin Sakit' ? skdFileName : undefined,
-        skdFileDataUrl: leaveType === 'Izin Sakit' ? skdFileDataUrl : undefined,
-        doctorOrClinicName: leaveType === 'Izin Sakit' ? doctorOrClinicName : undefined,
-      },
-      actorLabel
-    );
-    setLeaveFeedback({ ok: res.ok, text: res.message });
-    if (res.ok) {
-      setLeaveDateRange('');
-      setLeaveDaysCount('1');
-      setLeaveReason('');
-      setSkdFileName('');
-      setSkdFileDataUrl('');
-      setDoctorOrClinicName('');
-    }
-  };
 
   const handleSaveSelfProfile = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1027,6 +968,16 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                     </button>
                     <button
                       type="button"
+                      onClick={() => selectMenu('emp-activity')}
+                      className="w-full p-3 bg-[#F5F7FA] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] flex items-center justify-between gap-2 text-left cursor-pointer transition-colors"
+                    >
+                      <span className="font-semibold text-[#102B69]">
+                        Catat / Update Laporan Kegiatan Kerja
+                      </span>
+                      <ClipboardList className="w-4 h-4 text-[#1468E8] shrink-0" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => selectMenu('emp-leave')}
                       className="w-full p-3 bg-[#F5F7FA] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] flex items-center justify-between gap-2 text-left cursor-pointer transition-colors"
                     >
@@ -1052,6 +1003,22 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                 </section>
               </div>
             </div>
+          )}
+
+          {/* =============================================================== */}
+          {/* MENU: LAPORAN & UPDATE KEGIATAN KARYAWAN                        */}
+          {/* =============================================================== */}
+          {activeMenu === 'emp-activity' && (
+            <EmployeeActivityPanel
+              employee={employee}
+              reports={store.activityReports}
+              onSubmitReport={(input) =>
+                store.submitEmployeeActivityReport(employee.id, input, actorLabel)
+              }
+              onUpdateReport={(reportId, input) =>
+                store.updateEmployeeActivityReport(reportId, employee.id, input, actorLabel)
+              }
+            />
           )}
 
           {/* =============================================================== */}
@@ -1410,319 +1377,33 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                 </section>
               )}
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Submit Leave Form */}
-                <section className="lg:col-span-5 bg-white border border-[#E2E8F0] rounded-[6px] p-6 space-y-4">
-                  <div>
-                    <h2 className="text-base font-bold text-[#102B69]">
-                      Ajukan Cuti atau Izin Baru
-                    </h2>
-                    <p className="text-xs text-[#64748B] mt-0.5">
-                      Sisa jatah cuti tahunan Anda:{' '}
-                      <strong className="text-[#1468E8] tabular-nums">
-                        {remainingAnnualLeave} / {store.policy.annualLeaveQuota} hari
-                      </strong>{' '}
-                      (Otomatis berkurang saat disetujui Admin)
-                    </p>
-                  </div>
+              {leaveFeedback && (
+                <div
+                  role="status"
+                  data-testid="employee-leave-feedback"
+                  className={`p-3.5 rounded-[6px] border text-xs font-semibold ${
+                    leaveFeedback.ok
+                      ? 'bg-[#F0FDF4] border-[#BBF7D0] text-[#16A36A]'
+                      : 'bg-[#FEF2F2] border-[#FECACA] text-[#DC3545]'
+                  }`}
+                >
+                  {leaveFeedback.text}
+                </div>
+              )}
 
-                  {leaveFeedback && (
-                    <div
-                      role="status"
-                      data-testid="employee-leave-feedback"
-                      className={`p-3 rounded-[4px] border text-xs font-semibold ${
-                        leaveFeedback.ok
-                          ? 'bg-[#F0FDF4] border-[#BBF7D0] text-[#16A36A]'
-                          : 'bg-[#FEF2F2] border-[#FECACA] text-[#DC3545]'
-                      }`}
-                    >
-                      {leaveFeedback.text}
-                    </div>
-                  )}
-
-                  <form onSubmit={handleLeaveSubmit} className="space-y-4 text-xs">
-                    <div>
-                      <label htmlFor="empLeaveType" className="block font-semibold text-[#172033] mb-1">
-                        Jenis Pengajuan *
-                      </label>
-                      <select
-                        id="empLeaveType"
-                        value={leaveType}
-                        onChange={(e) => {
-                          setLeaveType(
-                            e.target.value as 'Cuti Tahunan' | 'Izin Sakit' | 'Izin Keperluan'
-                          );
-                          setLeaveFeedback(null);
-                        }}
-                        className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] text-[#102B69] font-semibold"
-                      >
-                        <option value="Cuti Tahunan">
-                          Cuti Tahunan (Potong Kuota Tahunan · Sisa {remainingAnnualLeave} Hari)
-                        </option>
-                        <option value="Izin Sakit">
-                          Izin Sakit (Wajib Upload SKD / Surat Keterangan Dokter)
-                        </option>
-                        <option value="Izin Keperluan">
-                          Izin Keperluan Khusus (Potong Kuota Cuti/Izin)
-                        </option>
-                      </select>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="sm:col-span-2">
-                        <label
-                          htmlFor="empLeaveDateRange"
-                          className="block font-semibold text-[#172033] mb-1"
-                        >
-                          Tanggal / Rentang Hari *
-                        </label>
-                        <input
-                          id="empLeaveDateRange"
-                          type="text"
-                          value={leaveDateRange}
-                          onChange={(e) => setLeaveDateRange(e.target.value)}
-                          placeholder="Contoh: 25 – 26 Nov 2026"
-                          className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px]"
-                        />
-                      </div>
-                      <div>
-                        <label
-                          htmlFor="empLeaveDaysCount"
-                          className="block font-semibold text-[#172033] mb-1"
-                        >
-                          Jumlah Hari *
-                        </label>
-                        <input
-                          id="empLeaveDaysCount"
-                          type="number"
-                          min={1}
-                          max={30}
-                          value={leaveDaysCount}
-                          onChange={(e) => setLeaveDaysCount(e.target.value)}
-                          className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] tabular-nums"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Mandatory SKD Upload Box when Izin Sakit is selected */}
-                    {leaveType === 'Izin Sakit' && (
-                      <div
-                        data-testid="employee-skd-upload-box"
-                        className="p-4 bg-[#EAF2FF]/55 border border-[#C9DDFB] rounded-[6px] space-y-3"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="font-bold text-[#102B69]">
-                              Wajib Unggah SKD (Surat Keterangan Dokter) *
-                            </p>
-                            <p className="text-[11px] text-[#475569] mt-0.5">
-                              Pengajuan Izin Sakit tanpa lampiran SKD tidak dapat dikirim dan akan
-                              dianggap tidak sah.
-                            </p>
-                          </div>
-                          <span className="px-2 py-0.5 text-[10px] font-bold bg-[#102B69] text-white rounded-[3px] shrink-0">
-                            Wajib SKD
-                          </span>
-                        </div>
-
-                        <div>
-                          <label
-                            htmlFor="empSkdClinicName"
-                            className="block font-semibold text-[#172033] mb-1"
-                          >
-                            Nama Klinik / Rumah Sakit &amp; Dokter Pemeriksa
-                          </label>
-                          <input
-                            id="empSkdClinicName"
-                            type="text"
-                            value={doctorOrClinicName}
-                            onChange={(e) => setDoctorOrClinicName(e.target.value)}
-                            placeholder="Contoh: Klinik Pratama Medika — dr. Hendra Wijaya"
-                            className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-[4px]"
-                          />
-                        </div>
-
-                        <div className="space-y-2">
-                          <label
-                            htmlFor="empSkdFileInput"
-                            className="block font-semibold text-[#172033]"
-                          >
-                            Pilih File Surat Keterangan Dokter (Foto / PDF / Scan) *
-                          </label>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <label
-                              htmlFor="empSkdFileInput"
-                              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#102B69] bg-white hover:bg-[#F5F7FA] border border-[#CBD5E1] rounded-[4px] cursor-pointer"
-                            >
-                              <Upload className="w-3.5 h-3.5 text-[#1468E8]" aria-hidden="true" />
-                              <span>Pilih Berkas SKD dari Perangkat</span>
-                            </label>
-                            <input
-                              id="empSkdFileInput"
-                              type="file"
-                              accept=".pdf,.jpg,.jpeg,.png,.svg"
-                              onChange={handleSkdFileChange}
-                              className="sr-only"
-                            />
-                            <button
-                              type="button"
-                              data-testid="attach-clinic-skd-btn"
-                              onClick={handleAttachVerifiedClinicSkd}
-                              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#1468E8] bg-white hover:bg-[#EAF2FF] border border-[#C9DDFB] rounded-[4px] cursor-pointer"
-                            >
-                              <FileCheck2 className="w-3.5 h-3.5" aria-hidden="true" />
-                              <span>Lampirkan SKD Klinik Rekanan</span>
-                            </button>
-                          </div>
-
-                          {skdFileName ? (
-                            <div className="p-2.5 bg-[#F0FDF4] border border-[#BBF7D0] rounded-[4px] flex items-center justify-between gap-2 text-xs">
-                              <span className="inline-flex items-center gap-1.5 font-semibold text-[#16A36A] truncate">
-                                <FileCheck2 className="w-4 h-4 shrink-0" aria-hidden="true" />
-                                <span className="truncate">{skdFileName}</span>
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSkdFileName('');
-                                  setSkdFileDataUrl('');
-                                }}
-                                className="text-[11px] font-semibold text-[#DC3545] hover:underline shrink-0 cursor-pointer"
-                              >
-                                Hapus
-                              </button>
-                            </div>
-                          ) : (
-                            <p className="text-[11px] font-semibold text-[#B87D00]">
-                              Belum ada file SKD yang dilampirkan.
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    <div>
-                      <label
-                        htmlFor="empLeaveReason"
-                        className="block font-semibold text-[#172033] mb-1"
-                      >
-                        {leaveType === 'Izin Sakit'
-                          ? 'Keluhan Medis / Diagnosa Singkat *'
-                          : 'Alasan & Keterangan Serah Terima Tugas *'}
-                      </label>
-                      <textarea
-                        id="empLeaveReason"
-                        rows={3}
-                        value={leaveReason}
-                        onChange={(e) => setLeaveReason(e.target.value)}
-                        placeholder={
-                          leaveType === 'Izin Sakit'
-                            ? 'Tuliskan keluhan sakit atau anjuran istirahat sesuai surat dokter...'
-                            : 'Tuliskan alasan cuti/izin atau keterangan serah terima tugas...'
-                        }
-                        className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px]"
-                      />
-                    </div>
-
-                    <button
-                      type="submit"
-                      data-testid="submit-leave-btn"
-                      className="w-full px-4 py-2.5 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] cursor-pointer transition-colors"
-                    >
-                      {leaveType === 'Izin Sakit'
-                        ? 'Kirim Pengajuan Sakit + Lampiran SKD ke Admin'
-                        : 'Kirim Pengajuan Cuti/Izin ke Admin HR'}
-                    </button>
-                  </form>
-                </section>
-
-                {/* Leave History Table */}
-                <section className="lg:col-span-7 bg-white border border-[#E2E8F0] rounded-[6px] overflow-hidden">
-                  <div className="px-6 py-4 border-b border-[#E2E8F0]">
-                    <h2 className="text-base font-bold text-[#102B69]">
-                      Riwayat Pengajuan Cuti, Izin Sakit (SKD) &amp; Status Persetujuan
-                    </h2>
-                    <p className="text-xs text-[#64748B] mt-0.5">
-                      Setiap pengajuan yang disetujui Admin otomatis masuk ke Notifikasi Lonceng Anda
-                    </p>
-                  </div>
-                  <div className="divide-y divide-[#E2E8F0]">
-                    {myLeaves.length === 0 ? (
-                      <p className="p-6 text-xs text-[#64748B]">
-                        Belum ada pengajuan cuti atau izin tercatat.
-                      </p>
-                    ) : (
-                      myLeaves.map((lv) => {
-                        const isAlpha =
-                          lv.type === 'Alpha / Tanpa Keterangan' ||
-                          lv.status === 'Alpha' ||
-                          lv.status === 'Perlu Klarifikasi';
-                        return (
-                          <div
-                            key={lv.id}
-                            className="p-5 flex flex-wrap items-start justify-between gap-3 text-xs"
-                          >
-                            <div className="space-y-1.5 max-w-lg">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-bold text-[#102B69]">
-                                  {lv.type} · <span className="tabular-nums">{lv.dateRange}</span> (
-                                  {lv.daysCount} hari)
-                                </p>
-                                {lv.status === 'Disetujui' &&
-                                  (lv.type === 'Cuti Tahunan' || lv.type === 'Izin Keperluan') && (
-                                    <span className="px-2 py-0.5 text-[10px] font-bold bg-[#EAF2FF] text-[#1468E8] border border-[#C9DDFB] rounded-[3px] tabular-nums">
-                                      Jatah Cuti Terpotong -{lv.daysCount} Hari
-                                    </span>
-                                  )}
-                              </div>
-                              <p className="text-[#64748B]">{lv.reason}</p>
-
-                              {lv.type === 'Izin Sakit' && (
-                                <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold bg-[#F0FDF4] text-[#16A36A] border border-[#BBF7D0] rounded-[3px]">
-                                    <FileCheck2 className="w-3.5 h-3.5" aria-hidden="true" />
-                                    <span>SKD: {lv.skdFileName || 'Surat_Keterangan_Dokter.pdf'}</span>
-                                  </span>
-                                  {lv.skdFileDataUrl && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setPreviewSkdLeave(lv)}
-                                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-[#1468E8] bg-[#EAF2FF] hover:bg-[#1468E8] hover:text-white rounded-[3px] cursor-pointer"
-                                    >
-                                      <Eye className="w-3 h-3" aria-hidden="true" />
-                                      <span>Lihat SKD</span>
-                                    </button>
-                                  )}
-                                </div>
-                              )}
-
-                              {lv.reviewedBy && (
-                                <p className="text-[11px] text-[#64748B]">
-                                  Diproses oleh {lv.reviewedBy}{' '}
-                                  {lv.reviewedAt ? `(${lv.reviewedAt})` : ''}
-                                </p>
-                              )}
-                            </div>
-                            <span
-                              className={`font-bold shrink-0 ${
-                                isAlpha
-                                  ? 'text-[#DC3545]'
-                                  : lv.status === 'Disetujui' || lv.status === 'Terkonfirmasi Izin'
-                                    ? 'text-[#16A36A]'
-                                    : lv.status === 'Ditolak'
-                                      ? 'text-[#DC3545]'
-                                      : 'text-[#B87D00]'
-                              }`}
-                            >
-                              {isAlpha ? 'Alpha Mengikat' : lv.status}
-                            </span>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </section>
-              </div>
+              <EmployeeLeavePanel
+                employee={employee}
+                allEmployees={store.employees}
+                myLeaves={myLeaves}
+                leaveQuota={leaveQuota}
+                onSubmitLeave={(input) =>
+                  store.submitEmployeeLeaveRequest(employee.employeeCode, input, actorLabel)
+                }
+                onOpenSkdPreview={(rec) => setPreviewSkdLeave(rec)}
+                onFeedback={(fb) =>
+                  setLeaveFeedback({ ok: fb.tone === 'success', text: fb.message })
+                }
+              />
             </div>
           )}
 
@@ -1893,6 +1574,97 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
                   </div>
                 </section>
               </div>
+
+              {/* Arsip Slip Gaji Resmi (Sudah ACC Master Admin) */}
+              <section
+                aria-label="Arsip Slip Gaji Resmi"
+                data-testid="employee-payslips-section"
+                className="bg-white border border-[#E2E8F0] rounded-[6px] overflow-hidden"
+              >
+                <div className="px-6 py-4 border-b border-[#E2E8F0] flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Wallet className="w-4 h-4 text-[#1468E8]" aria-hidden="true" />
+                    <div>
+                      <h2 className="text-sm font-bold text-[#102B69]">
+                        Arsip Slip Gaji Resmi ({myPublishedSlips.length})
+                      </h2>
+                      <p className="text-xs text-[#64748B] mt-0.5">
+                        Slip gaji resmi dari tim Payroll yang telah di-ACC Master Admin. Klik untuk pratinjau rincian atau unduh PDF A4.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {myPublishedSlips.length === 0 ? (
+                  <p className="p-6 text-xs text-[#64748B]">
+                    Belum ada slip gaji resmi yang diterbitkan untuk akun Anda pada periode berjalan.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-[#E2E8F0]">
+                    {myPublishedSlips.map((slip) => {
+                      const totalComp = slip.pkwtCompensation + slip.otherCompensation;
+                      return (
+                        <div
+                          key={slip.id}
+                          data-testid={`employee-slip-row-${slip.period}`}
+                          className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs hover:bg-[#F5F7FA]/60 transition-colors"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-bold text-sm text-[#102B69]">
+                                {slip.periodLabel}
+                              </span>
+                              <span className="font-mono text-[#64748B]">{slip.period}</span>
+                              <span className="px-2 py-0.5 text-[11px] font-bold rounded-[3px] border text-[#16A36A] bg-[#ECFDF5] border-[#A7F3D0]">
+                                Resmi · Terbit
+                              </span>
+                              <span className="text-[11px] font-medium text-[#64748B]">
+                                {slip.calculationSource}
+                              </span>
+                            </div>
+                            <p className="text-[#172033] tabular-nums">
+                              Bruto: <strong>{formatRupiahDot(slip.grossIncome)}</strong> · Potongan:{' '}
+                              <strong className="text-[#DC3545]">
+                                - {formatRupiahDot(slip.totalDeductions)}
+                              </strong>{' '}
+                              {totalComp > 0 && (
+                                <>
+                                  · Kompensasi:{' '}
+                                  <strong className="text-[#1468E8]">
+                                    + {formatRupiahDot(totalComp)}
+                                  </strong>
+                                </>
+                              )}
+                            </p>
+                            <p className="text-[11px] text-[#64748B] tabular-nums">
+                              Basis: {slip.baseSalarySourceTag} · Disetujui oleh{' '}
+                              {slip.approvedBy || 'Master Admin'} ({slip.approvedAt || 'Tercatat'})
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-4 shrink-0">
+                            <div className="text-right tabular-nums">
+                              <p className="text-[11px] text-[#64748B]">Take Home Pay (THP)</p>
+                              <p className="text-sm font-extrabold text-[#16A36A]">
+                                {formatRupiahDot(slip.takeHomePay)}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              data-testid={`open-emp-slip-${slip.period}`}
+                              onClick={() => setSelectedSlipModal(slip)}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>Lihat &amp; Unduh PDF</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
 
               {/* Riwayat Kontrak Saya (Arsip Read-Only) */}
               <section
@@ -3030,6 +2802,14 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, stor
             </div>
           </div>
         </div>
+      )}
+
+      {selectedSlipModal && (
+        <SlipGajiModal
+          slip={selectedSlipModal}
+          settings={store.settings}
+          onClose={() => setSelectedSlipModal(null)}
+        />
       )}
     </div>
   );

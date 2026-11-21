@@ -4,6 +4,7 @@ import {
   AttendanceLogRecord,
   AttendanceStatus,
   ContractRecord,
+  EmployeeActivityReportRecord,
   EmployeeRecord,
   EmploymentCategory,
   INITIAL_POLICY,
@@ -14,8 +15,10 @@ import {
   WorkPolicyConfig,
   calculateEmployeeLeaveQuotaSummary,
   countExpiringPkwtContracts,
+  doesLeaveDeductAnnualQuota,
   filterAttendanceLogs,
   filterContracts,
+  isPartialDayLeaveType,
   summarizeAttendanceLogs,
 } from '../../data/masterAdminData';
 import {
@@ -24,8 +27,10 @@ import {
 } from '../../utils/pkwtLifecycle';
 import { PkwtDocumentModal } from './PkwtDocumentModal';
 import { EmployeeAttendanceRecapSection } from '../shared/EmployeeAttendanceRecapSection';
+import { ActivityReportsBoard } from '../shared/ActivityReportsBoard';
+import { LeaveFormPdfModal } from '../shared/LeaveFormPdfModal';
 
-export type MonitoringTabId = 'summary' | 'attendance' | 'leave-alpha' | 'pkwt';
+export type MonitoringTabId = 'summary' | 'attendance' | 'leave-alpha' | 'pkwt' | 'activity-reports';
 
 interface MonitoringPanelProps {
   snapshots: OperationalSnapshot[];
@@ -33,6 +38,7 @@ interface MonitoringPanelProps {
   leaveAbsences: LeaveAbsenceRecord[];
   contracts: ContractRecord[];
   employees?: EmployeeRecord[];
+  activityReports?: EmployeeActivityReportRecord[];
   policy?: WorkPolicyConfig;
   settings?: SystemSettingsConfig;
   initialTab?: MonitoringTabId;
@@ -79,6 +85,7 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
   leaveAbsences,
   contracts,
   employees = [],
+  activityReports = [],
   policy = INITIAL_POLICY,
   settings,
   initialTab = 'summary',
@@ -91,6 +98,9 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
   const [activeTab, setActiveTab] = useState<MonitoringTabId>(initialTab);
   const [activePkwtContract, setActivePkwtContract] = useState<ContractRecord | null>(null);
   const [previewSkdRecord, setPreviewSkdRecord] = useState<LeaveAbsenceRecord | null>(null);
+  const [previewLeavePdfRecord, setPreviewLeavePdfRecord] = useState<LeaveAbsenceRecord | null>(
+    null
+  );
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -193,7 +203,7 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
           role="tab"
           aria-selected={activeTab === 'summary'}
           onClick={() => handleSelectTab('summary')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'summary'
               ? 'bg-[#102B69] text-white'
               : 'text-[#64748B] hover:text-[#102B69] hover:bg-[#F5F7FA]'
@@ -207,7 +217,7 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
           role="tab"
           aria-selected={activeTab === 'attendance'}
           onClick={() => handleSelectTab('attendance')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'attendance'
               ? 'bg-[#102B69] text-white'
               : 'text-[#64748B] hover:text-[#102B69] hover:bg-[#F5F7FA]'
@@ -222,7 +232,7 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
           data-testid="monitoring-tab-leave"
           aria-selected={activeTab === 'leave-alpha'}
           onClick={() => handleSelectTab('leave-alpha')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'leave-alpha'
               ? 'bg-[#102B69] text-white'
               : 'text-[#64748B] hover:text-[#102B69] hover:bg-[#F5F7FA]'
@@ -236,13 +246,28 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
           role="tab"
           aria-selected={activeTab === 'pkwt'}
           onClick={() => handleSelectTab('pkwt')}
-          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'pkwt'
               ? 'bg-[#102B69] text-white'
               : 'text-[#64748B] hover:text-[#102B69] hover:bg-[#F5F7FA]'
           }`}
         >
           Kontrak Kerja / PKWT ({expiringPkwtCount} Segera Berakhir)
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          data-testid="monitoring-tab-activity-reports"
+          aria-selected={activeTab === 'activity-reports'}
+          onClick={() => handleSelectTab('activity-reports')}
+          className={`px-3.5 py-2 text-xs font-semibold rounded-[4px] whitespace-nowrap shrink-0 cursor-pointer ${
+            activeTab === 'activity-reports'
+              ? 'bg-[#102B69] text-white'
+              : 'text-[#64748B] hover:text-[#102B69] hover:bg-[#F5F7FA]'
+          }`}
+        >
+          Laporan Kegiatan ({activityReports.length})
         </button>
       </div>
 
@@ -658,6 +683,16 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
                     0,
                     empQuota.remainingLeaveQuota - item.daysCount
                   );
+                  const partialDay = isPartialDayLeaveType(item.type);
+                  const durationLabel = partialDay
+                    ? item.type === 'Meninggalkan Pekerjaan' &&
+                      item.leaveTimeStart &&
+                      item.leaveTimeEnd
+                      ? `${item.leaveTimeStart} s/d ${item.leaveTimeEnd}`
+                      : item.timeDetail
+                        ? `Pukul ${item.timeDetail} WIB`
+                        : 'Parsial'
+                    : `${item.daysCount} hari`;
 
                   return (
                     <div
@@ -679,7 +714,7 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
                             {item.type}
                           </span>
                           <span className="font-semibold text-[#172033] tabular-nums">
-                            {item.dateRange} ({item.daysCount} hari)
+                            {item.dateRange} ({durationLabel})
                           </span>
                           <span className="text-[#64748B]">· {item.employmentType}</span>
                           {item.submittedAt && (
@@ -696,6 +731,16 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
 
                         <p className="text-xs text-[#64748B]">{item.reason}</p>
 
+                        {item.replacementStaff?.fullName && (
+                          <p className="text-[11px] text-[#475569]">
+                            Staff Pengganti:{' '}
+                            <strong className="text-[#172033]">
+                              {item.replacementStaff.fullName}
+                            </strong>{' '}
+                            ({item.replacementStaff.employeeCode})
+                          </p>
+                        )}
+
                         {/* Real-time Quota & SKD Metadata Row */}
                         <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px]">
                           {!isAlphaRecord && (
@@ -707,7 +752,7 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
                           )}
 
                           {item.status === 'Menunggu' &&
-                            (item.type === 'Cuti Tahunan' || item.type === 'Izin Keperluan') && (
+                            doesLeaveDeductAnnualQuota(item.type) && (
                               <span className="px-2 py-0.5 bg-[#FFFBEB] border border-[#FDE68A] rounded-[3px] text-[#B87D00] font-semibold tabular-nums">
                                 Jika Disetujui → Sisa Jatah Menjadi: {projectedRemaining} /{' '}
                                 {empQuota.annualLeaveQuota} Hari
@@ -750,23 +795,39 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        {!isAlphaRecord && (
+                          <button
+                            type="button"
+                            data-testid={`monitoring-leave-pdf-${item.id}`}
+                            onClick={() => setPreviewLeavePdfRecord(item)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-[#102B69] bg-[#F5F7FA] hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer whitespace-nowrap"
+                          >
+                            <FileText className="w-3.5 h-3.5 text-[#1468E8]" aria-hidden="true" />
+                            <span>Form PDF</span>
+                          </button>
+                        )}
+
                         {item.status === 'Menunggu' && !isAlphaRecord && (
                           <>
                             <button
                               type="button"
                               data-testid={`approve-leave-${item.id}`}
                               onClick={() => onApproveLeave(item.id)}
-                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] cursor-pointer"
+                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] cursor-pointer whitespace-nowrap"
                             >
                               <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                              <span>Setujui &amp; Potong Jatah</span>
+                              <span>
+                                {doesLeaveDeductAnnualQuota(item.type)
+                                  ? 'Setujui & Potong Jatah'
+                                  : 'Setujui Permohonan'}
+                              </span>
                             </button>
                             <button
                               type="button"
                               data-testid={`reject-leave-${item.id}`}
                               onClick={() => onRejectLeave(item.id)}
-                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-[#DC3545] bg-white hover:bg-[#FEF2F2] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
+                              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-[#DC3545] bg-white hover:bg-[#FEF2F2] border border-[#E2E8F0] rounded-[4px] cursor-pointer whitespace-nowrap"
                             >
                               <X className="w-3.5 h-3.5" aria-hidden="true" />
                               <span>Tolak</span>
@@ -1086,12 +1147,39 @@ export const MonitoringPanel: React.FC<MonitoringPanelProps> = ({
         </section>
       )}
 
+      {/* TAB 5: Laporan Kegiatan Karyawan (Internal & Eksternal) */}
+      {activeTab === 'activity-reports' && (
+        <ActivityReportsBoard
+          reports={activityReports}
+          title="Laporan Kegiatan Karyawan — Lintas Unit & Client"
+          subtitle="Pantauan langsung pembaruan aktivitas kerja seluruh karyawan Internal maupun Eksternal tanpa persetujuan (ACC)."
+          csvFileNamePrefix="laporan-kegiatan-semua-karyawan"
+        />
+      )}
+
       {activePkwtContract && (
         <PkwtDocumentModal
           contract={activePkwtContract}
           employee={employees.find((e) => e.employeeCode === activePkwtContract.employeeCode)}
           settings={settings}
           onClose={() => setActivePkwtContract(null)}
+        />
+      )}
+
+      {previewLeavePdfRecord && (
+        <LeaveFormPdfModal
+          record={previewLeavePdfRecord}
+          employee={employees.find(
+            (e) =>
+              e.employeeCode.toLowerCase() ===
+              previewLeavePdfRecord.employeeCode.toLowerCase()
+          )}
+          quotaSummary={calculateEmployeeLeaveQuotaSummary(
+            previewLeavePdfRecord.employeeCode,
+            leaveAbsences,
+            policy.annualLeaveQuota
+          )}
+          onClose={() => setPreviewLeavePdfRecord(null)}
         />
       )}
 

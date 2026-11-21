@@ -9,6 +9,7 @@ import {
   LeaveAbsenceRecord,
   countExpiringPkwtContracts,
   splitActiveEntitiesByCategory,
+  summarizeEmployeeStatusCounts,
 } from '../../data/masterAdminData';
 import { WorkforceAttendanceAnalyticsSection } from './WorkforceAttendanceAnalyticsSection';
 import { LiveAttendanceLogCard } from './LiveAttendanceLogCard';
@@ -39,6 +40,7 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({
   const internalEmployees = internalUnits.reduce((sum, item) => sum + item.employeeCount, 0);
   const clientEmployees = clientPlacements.reduce((sum, item) => sum + item.employeeCount, 0);
   const totalEmployees = internalEmployees + clientEmployees;
+  const statusCounts = summarizeEmployeeStatusCounts(employees);
   const expiringPkwt = countExpiringPkwtContracts(contracts);
   const totalSupportedPositions = activeEntities.reduce(
     (sum, ent) => sum + Math.max(1, ent.supportedPositions?.length ?? 0),
@@ -50,17 +52,56 @@ export const OverviewPanel: React.FC<OverviewPanelProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Row 1: Total Karyawan & Total Client */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="bg-white border border-[#E2E8F0] rounded-[6px] p-5">
-          <p className="text-xs font-semibold text-[#64748B] mb-1">Total Karyawan</p>
-          <p className="text-2xl font-extrabold text-[#102B69] tabular-nums">
+      {/* Row 1: Karyawan Aktif, Karyawan Nonaktif & Total Client */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div
+          data-testid="overview-active-karyawan"
+          className="bg-white border border-[#E2E8F0] rounded-[6px] p-5"
+        >
+          <p className="text-xs font-semibold text-[#64748B] mb-1">Karyawan Aktif</p>
+          <p
+            data-testid="overview-total-karyawan"
+            className="text-2xl font-extrabold text-[#16A36A] tabular-nums"
+          >
             {totalEmployees} Orang
           </p>
           <p className="text-xs text-[#64748B] mt-1 tabular-nums">
             {hasClients
               ? `${internalEmployees} internal · ${clientEmployees} penempatan klien · ${totalSupportedPositions} posisi aktif`
               : `${internalEmployees} karyawan internal aktif · ${totalSupportedPositions} posisi aktif`}
+          </p>
+          <p
+            data-testid="overview-active-breakdown"
+            className="text-[11px] text-[#64748B] mt-2 pt-2 border-t border-[#F1F5F9] tabular-nums"
+          >
+            Direktori Terdata:{' '}
+            <strong className="text-[#16A36A]">{statusCounts.activeCount} Aktif</strong> ·{' '}
+            <strong className="text-[#B87D00]">{statusCounts.probationCount} Probation</strong>
+          </p>
+        </div>
+
+        <div
+          data-testid="overview-inactive-karyawan"
+          className="bg-white border border-[#E2E8F0] rounded-[6px] p-5"
+        >
+          <p className="text-xs font-semibold text-[#64748B] mb-1">Karyawan Nonaktif</p>
+          <p
+            data-testid="overview-inactive-total"
+            className={`text-2xl font-extrabold tabular-nums ${
+              statusCounts.inactiveOrResignedCount > 0 ? 'text-[#DC3545]' : 'text-[#102B69]'
+            }`}
+          >
+            {statusCounts.inactiveOrResignedCount} Orang
+          </p>
+          <p
+            data-testid="overview-status-breakdown"
+            className="text-xs text-[#64748B] mt-1 tabular-nums"
+          >
+            <strong className="text-[#DC3545]">{statusCounts.resignCount} Resign</strong> ·{' '}
+            <strong className="text-[#475569]">{statusCounts.nonaktifCount} Nonaktif</strong>
+          </p>
+          <p className="text-[11px] text-[#64748B] mt-2 pt-2 border-t border-[#F1F5F9]">
+            Tidak masuk hitungan aktif &amp; akses login diblokir
           </p>
         </div>
 

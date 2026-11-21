@@ -228,12 +228,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           >
             {mode === 'register'
               ? 'Daftar sebagai Pelamar & akses lowongan aktif PEVORA secara instan.'
-              : 'Satu akses aman untuk operasional SDM, Rekrutmen & Pelamar.'}
+              : 'Satu akses aman untuk tata kelola SDM, Payroll & Karyawan.'}
           </h1>
           <p className="text-sm sm:text-base text-[#EAF2FF]/90 leading-relaxed mb-8">
             {mode === 'register'
               ? 'Buat akun pelamar dan langsung masuk ke portal. Lengkapi profil karyawan dengan AI Vision OCR KTP & KK atau isi manual kapan saja.'
-              : 'Masuk menggunakan NIK Karyawan / Kode Pelamar atau email Anda. Sistem otomatis mengarahkan ke ruang kerja Master Admin, Admin, Rekruter, Karyawan, atau Pelamar.'}
+              : 'Masuk menggunakan ID/NIK Karyawan atau email perusahaan Anda. Sistem otomatis mengarahkan ke ruang kerja Master Admin, Admin, Payroll, atau Karyawan.'}
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-6 border-t border-white/15">
@@ -452,8 +452,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       <span className="text-[#64748B]">Belum memiliki akun PEVORA?</span>
                       <button
                         type="button"
-                        onClick={switchToRegister}
-                        className="font-semibold text-[#1468E8] hover:text-[#102B69] hover:underline underline-offset-2 transition-colors cursor-pointer"
+                        onClick={() => {}}
+                        aria-disabled="true"
+                        className="font-semibold text-[#1468E8] hover:text-[#102B69] transition-colors cursor-default"
                       >
                         Daftar sekarang
                       </button>

@@ -7,10 +7,13 @@ import {
   ContractHistoryItem,
   ContractRecord,
   DepartmentRecord,
+  EmployeeActivityReportInput,
+  EmployeeActivityReportRecord,
   EmployeeFormInput,
   EmployeeRecord,
   EmploymentCategory,
   EntityRecord,
+  INITIAL_ACTIVITY_REPORTS,
   INITIAL_APPROVALS,
   INITIAL_ATTENDANCE_LOGS,
   INITIAL_AUDIT_LOGS,
@@ -25,6 +28,8 @@ import {
   INITIAL_SETTINGS,
   INITIAL_USERS,
   LeaveAbsenceRecord,
+  LeaveReplacementStaff,
+  LeaveRequestType,
   OnboardingCandidateRecord,
   OperationalSnapshot,
   SystemSettingsConfig,
@@ -32,19 +37,24 @@ import {
   UserRoleName,
   WorkPolicyConfig,
   WorkspaceNotificationRecord,
+  applyEmployeeHeadcountDelta,
   buildLiveOperationalSnapshots,
   buildSkdCertificatePreviewDataUrl,
   calculateDaysRemaining,
   calculateEmployeeLeaveQuotaSummary,
   countUploadedDocuments,
   createAuditEntry,
+  doesLeaveDeductAnnualQuota,
   evaluateAttendanceAgainstPolicy,
   extractEntityNikPrefix,
   formatIndonesianDate,
   generateClientEmployeeNik,
   getContractEocIndicator,
+  isPartialDayLeaveType,
+  normalizeEmployeePlacementInput,
   resolveEmployeeWorkSchedule,
   syncAttendanceLocationsFromEntities,
+  validateActivityReportInput,
   validateLeaveRequestSubmission,
 } from '../data/masterAdminData';
 import { FACE_MATCH_THRESHOLD_PERCENT } from '../utils/faceVerification';
@@ -65,7 +75,23 @@ import {
   calculateApplicantProfileCompleteness,
   computeRemainingHeadcount,
 } from '../data/recruitmentData';
-import type { MasterAdminUser } from '../utils/validation';
+import {
+  isPortalRoleTemporarilyDisabled,
+  type MasterAdminUser,
+} from '../utils/validation';
+import {
+  INITIAL_PAYROLL_TARIFFS,
+  type PayrollPeriodRun,
+  type PayrollSlipEditableInput,
+  type PayrollSlipRecord,
+  type PayrollTariffConfig,
+  buildSlipUniqueKey,
+  computePayrollSlip,
+  formatPayrollPeriodLabel,
+  isEmployeeEligibleForPayrollRun,
+  summarizePayrollPeriodRun,
+  upsertPayrollSlipsIdempotent,
+} from '../utils/payrollCalculator';
 
 const WORKSPACE_STORAGE_KEY = 'pevora_hris_workspace_v1';
 
@@ -86,6 +112,12 @@ interface PersistedWorkspaceSlice {
   applicants: ApplicantProfileRecord[];
   applications: JobApplicationRecord[];
   notifications: WorkspaceNotificationRecord[];
+  payrollTariffs: PayrollTariffConfig;
+  payrollSlips: PayrollSlipRecord[];
+  payrollRuns: PayrollPeriodRun[];
+  claimedPkwtCompensationNumbers: string[];
+  settledResignEmployeeIds: string[];
+  activityReports: EmployeeActivityReportRecord[];
 }
 
 function loadPersistedWorkspace(): Partial<PersistedWorkspaceSlice> {
@@ -126,7 +158,14 @@ export function useWorkspaceStore() {
   const [employees, setEmployees] = useState<EmployeeRecord[]>(
     initial.employees ?? INITIAL_EMPLOYEES
   );
-  const [users, setUsers] = useState<UserAccountRecord[]>(initial.users ?? INITIAL_USERS);
+  const [users, setUsers] = useState<UserAccountRecord[]>(() => {
+    const base = initial.users ?? INITIAL_USERS;
+    const payrollSeed = INITIAL_USERS.find((u) => u.id === 'usr-8');
+    if (payrollSeed && !base.some((u) => u.id === payrollSeed.id || u.loginAlias === 'swa-payroll')) {
+      return [...base, payrollSeed];
+    }
+    return base;
+  });
   const [approvals, setApprovals] = useState<ApprovalRequestRecord[]>(
     initial.approvals ?? INITIAL_APPROVALS
   );
@@ -177,6 +216,88 @@ export function useWorkspaceStore() {
   );
   const [applications, setApplications] = useState<JobApplicationRecord[]>(
     initial.applications ?? INITIAL_JOB_APPLICATIONS
+  );
+  const [payrollTariffs, setPayrollTariffs] = useState<PayrollTariffConfig>(() => ({
+    ...INITIAL_PAYROLL_TARIFFS,
+    ...(initial.payrollTariffs ?? {}),
+    regionalTiers:
+      initial.payrollTariffs?.regionalTiers ?? INITIAL_PAYROLL_TARIFFS.regionalTiers,
+  }));
+  const [payrollSlips, setPayrollSlips] = useState<PayrollSlipRecord[]>(() => {
+    if (initial.payrollSlips && initial.payrollSlips.length > 0) {
+      return initial.payrollSlips;
+    }
+    // Seed 1 approved historical period (2026-10) so employees can immediately view & download PDF slips
+    return INITIAL_EMPLOYEES.filter((e) => e.status !== 'Nonaktif').map((emp) => {
+      const slip = computePayrollSlip({
+        period: '2026-10',
+        employee: emp,
+        entities: INITIAL_ENTITIES,
+        tariffs: INITIAL_PAYROLL_TARIFFS,
+        attendanceLogs: [],
+        leaveAbsences: [],
+        edits: {
+          variableAllowance: 350000,
+          overtimePay: emp.employeeCode === 'NEW-209' ? 275000 : 0,
+        },
+        status: 'Disetujui',
+      });
+      return {
+        ...slip,
+        approvedBy: 'Fathurrahman (swa-fathur)',
+        approvedAt: '01 Nov 2026 · 09:00',
+      };
+    });
+  });
+  const [payrollRuns, setPayrollRuns] = useState<PayrollPeriodRun[]>(() => {
+    if (initial.payrollRuns && initial.payrollRuns.length > 0) {
+      return initial.payrollRuns;
+    }
+    const octSlips = INITIAL_EMPLOYEES.filter((e) => e.status !== 'Nonaktif').map((emp) =>
+      computePayrollSlip({
+        period: '2026-10',
+        employee: emp,
+        entities: INITIAL_ENTITIES,
+        tariffs: INITIAL_PAYROLL_TARIFFS,
+        attendanceLogs: [],
+        leaveAbsences: [],
+        edits: {
+          variableAllowance: 350000,
+          overtimePay: emp.employeeCode === 'NEW-209' ? 275000 : 0,
+        },
+        status: 'Disetujui',
+      })
+    );
+    return [
+      summarizePayrollPeriodRun('2026-10', octSlips, {
+        period: '2026-10',
+        periodLabel: 'Oktober 2026',
+        status: 'Disetujui',
+        locked: true,
+        submittedBy: 'Dewi Anggraini (PAY-001)',
+        submittedAt: '31 Okt 2026 · 16:30',
+        approvedBy: 'Fathurrahman (swa-fathur)',
+        approvedAt: '01 Nov 2026 · 09:00',
+        totalEmployees: octSlips.length,
+        totalGross: 0,
+        totalCompensation: 0,
+        totalBpjsEmployee: 0,
+        totalPph21: 0,
+        totalDeductions: 0,
+        totalThp: 0,
+        totalCompanyCost: 0,
+        sourceSummary: 'Dihitung Aplikasi',
+      }),
+    ];
+  });
+  const [claimedPkwtCompensationNumbers, setClaimedPkwtCompensationNumbers] = useState<string[]>(
+    initial.claimedPkwtCompensationNumbers ?? []
+  );
+  const [settledResignEmployeeIds, setSettledResignEmployeeIds] = useState<string[]>(
+    initial.settledResignEmployeeIds ?? []
+  );
+  const [activityReports, setActivityReports] = useState<EmployeeActivityReportRecord[]>(
+    initial.activityReports ?? INITIAL_ACTIVITY_REPORTS
   );
   const [notifications, setNotifications] = useState<WorkspaceNotificationRecord[]>(() => {
     const seeded: WorkspaceNotificationRecord[] = [];
@@ -311,6 +432,12 @@ export function useWorkspaceStore() {
         applicants,
         applications,
         notifications,
+        payrollTariffs,
+        payrollSlips,
+        payrollRuns,
+        claimedPkwtCompensationNumbers,
+        settledResignEmployeeIds,
+        activityReports,
       };
       window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(payload));
     } catch {
@@ -333,6 +460,12 @@ export function useWorkspaceStore() {
     applicants,
     applications,
     notifications,
+    payrollTariffs,
+    payrollSlips,
+    payrollRuns,
+    claimedPkwtCompensationNumbers,
+    settledResignEmployeeIds,
+    activityReports,
   ]);
 
   const appendAudit = (
@@ -447,10 +580,97 @@ export function useWorkspaceStore() {
         prev.map((emp) => (emp.fullName === targetName ? { ...emp, status: 'Aktif' } : emp))
       );
     }
+    if (found.title.startsWith('Pengesahan Payroll Periode ')) {
+      const targetPeriod = found.title
+        .replace('Pengesahan Payroll Periode ', '')
+        .split('·')[0]
+        .trim();
+      const nowStamp = `Hari ini · ${String(new Date().getHours()).padStart(2, '0')}:${String(
+        new Date().getMinutes()
+      ).padStart(2, '0')}`;
+      const periodSlips = payrollSlips.filter((s) => s.period === targetPeriod);
+      const approvedSlips: PayrollSlipRecord[] = payrollSlips.map((s) =>
+        s.period === targetPeriod
+          ? {
+              ...s,
+              status: 'Disetujui',
+              approvedBy: actorLabel,
+              approvedAt: nowStamp,
+            }
+          : s
+      );
+      setPayrollSlips(approvedSlips);
+      const newlyClaimedContracts = periodSlips
+        .filter((s) => s.pkwtCompensation > 0 && s.pkwtContractClaimedNumber)
+        .map((s) => s.pkwtContractClaimedNumber as string);
+      if (newlyClaimedContracts.length > 0) {
+        setClaimedPkwtCompensationNumbers((prev) =>
+          Array.from(new Set([...prev, ...newlyClaimedContracts]))
+        );
+      }
+      const newlySettledResignIds = periodSlips
+        .filter((s) => {
+          const emp = employees.find((e) => e.id === s.employeeId);
+          return s.settlementType === 'Final Settlement (Resign)' || emp?.status === 'Resign';
+        })
+        .map((s) => s.employeeId);
+      if (newlySettledResignIds.length > 0) {
+        setSettledResignEmployeeIds((prev) =>
+          Array.from(new Set([...prev, ...newlySettledResignIds]))
+        );
+      }
+      setPayrollRuns((prev) => {
+        const existingRun = prev.find((r) => r.period === targetPeriod);
+        const updatedRun = summarizePayrollPeriodRun(targetPeriod, approvedSlips, {
+          ...(existingRun ?? {
+            period: targetPeriod,
+            periodLabel: formatPayrollPeriodLabel(targetPeriod),
+            status: 'Disetujui',
+            locked: true,
+            totalEmployees: periodSlips.length,
+            totalGross: 0,
+            totalCompensation: 0,
+            totalBpjsEmployee: 0,
+            totalPph21: 0,
+            totalDeductions: 0,
+            totalThp: 0,
+            totalCompanyCost: 0,
+            sourceSummary: 'Dihitung Aplikasi',
+          }),
+          status: 'Disetujui',
+          locked: true,
+          approvedBy: actorLabel,
+          approvedAt: nowStamp,
+        });
+        const others = prev.filter((r) => r.period !== targetPeriod);
+        return [updatedRun, ...others];
+      });
+      pushNotification({
+        type: 'payroll-approved',
+        title: `Payroll Periode ${formatPayrollPeriodLabel(targetPeriod)} Disetujui`,
+        message: `Disahkan oleh ${actorLabel}. Periode terkunci & ${periodSlips.length} Slip Gaji resmi diterbitkan ke Portal Karyawan.`,
+        targetMenu: 'pay-run',
+        entityName: found.entityName,
+        recipientRole: 'payroll',
+      });
+      periodSlips.forEach((slip) => {
+        pushNotification({
+          type: 'payslip-published',
+          title: `Slip Gaji ${slip.periodLabel} Tersedia`,
+          message: `Slip gaji periode ${slip.periodLabel} telah disetujui Master Admin. Lihat rincian & unduh PDF di menu Kontrak & Slip.`,
+          targetMenu: 'emp-contract',
+          employeeCode: slip.employeeCode,
+          entityName: slip.entityName,
+          recipientRole: 'employee',
+        });
+      });
+    }
     setNotifications((prev) =>
       prev.map((n) =>
         n.recipientRole === 'master-admin' &&
-        (n.type === 'pkwt-extension-requested' || n.type === 'approval-pending') &&
+        (n.type === 'pkwt-extension-requested' ||
+          n.type === 'approval-pending' ||
+          n.type === 'payroll-submitted') &&
         found.title.includes(n.entityName ?? '')
           ? { ...n, read: true }
           : n
@@ -481,6 +701,36 @@ export function useWorkspaceStore() {
         targetMenu: 'admin-onboarding',
         entityName: found.entityName,
         recipientRole: 'admin',
+      });
+    }
+    if (found.title.startsWith('Pengesahan Payroll Periode ')) {
+      const targetPeriod = found.title
+        .replace('Pengesahan Payroll Periode ', '')
+        .split('·')[0]
+        .trim();
+      const updatedSlips: PayrollSlipRecord[] = payrollSlips.map((s) =>
+        s.period === targetPeriod ? { ...s, status: 'Ditolak' } : s
+      );
+      setPayrollSlips(updatedSlips);
+      setPayrollRuns((prev) =>
+        prev.map((r) =>
+          r.period === targetPeriod
+            ? {
+                ...r,
+                status: 'Ditolak',
+                locked: false,
+                rejectedReason: `Ditolak oleh ${actorLabel}`,
+              }
+            : r
+        )
+      );
+      pushNotification({
+        type: 'payroll-rejected',
+        title: `Payroll Periode ${formatPayrollPeriodLabel(targetPeriod)} Ditolak`,
+        message: `Perlu revisi sebelum diajukan ulang (${actorLabel}).`,
+        targetMenu: 'pay-run',
+        entityName: found.entityName,
+        recipientRole: 'payroll',
       });
     }
     appendAudit(actorLabel, 'Persetujuan', `Menolak permintaan: ${found.title}`, found.entityName);
@@ -617,18 +867,20 @@ export function useWorkspaceStore() {
 
   const createEmployee = (data: EmployeeFormInput, actorLabel: string) => {
     const todayIso = new Date().toISOString().slice(0, 10);
+    const normalizedData = normalizeEmployeePlacementInput(data, entities);
     const created: EmployeeRecord = {
-      ...data,
+      ...normalizedData,
       id: `emp-${Date.now()}`,
-      isNewHire: data.isNewHire ?? true,
-      createdAtIso: data.createdAtIso ?? todayIso,
+      isNewHire: normalizedData.isNewHire ?? true,
+      createdAtIso: normalizedData.createdAtIso ?? todayIso,
       contractHistory: buildInitialHistoryFromInput(
-        data,
-        data.contractType === 'PKWT' ? 'Menunggu TTD Karyawan' : 'Sudah TTD Digital'
+        normalizedData,
+        normalizedData.contractType === 'PKWT' ? 'Menunggu TTD Karyawan' : 'Sudah TTD Digital'
       ),
     };
     setEmployees((prev) => [created, ...prev]);
-    setContracts((prev) => [buildSyncedContractRecord(data), ...prev]);
+    setEntities((prev) => applyEmployeeHeadcountDelta(prev, null, created));
+    setContracts((prev) => [buildSyncedContractRecord(normalizedData), ...prev]);
     pushNotification({
       type: 'new-employee',
       title: `Karyawan Baru Ditambahkan: ${created.fullName} (${created.employeeCode})`,
@@ -649,47 +901,55 @@ export function useWorkspaceStore() {
   const updateEmployee = (id: string, data: EmployeeFormInput, actorLabel: string) => {
     const existing = employees.find((e) => e.id === id);
     if (!existing) return;
+    const normalizedData = normalizeEmployeePlacementInput(data, entities);
     setEmployees((prev) =>
       prev.map((e) =>
         e.id === id
           ? {
-              ...data,
+              ...normalizedData,
               id,
-              faceBiometric: data.faceBiometric ?? existing.faceBiometric,
-              contractHistory: data.contractHistory ?? existing.contractHistory,
-              originApplicantCode: data.originApplicantCode ?? existing.originApplicantCode,
-              applicantId: data.applicantId ?? existing.applicantId,
-              portalPassword: data.portalPassword ?? existing.portalPassword,
-              accountDisabled: data.accountDisabled ?? existing.accountDisabled,
-              passwordResetAt: data.passwordResetAt ?? existing.passwordResetAt,
-              isNewHire: data.isNewHire ?? existing.isNewHire,
-              createdAtIso: data.createdAtIso ?? existing.createdAtIso,
-              savedSignatureDataUrl: data.savedSignatureDataUrl ?? existing.savedSignatureDataUrl,
+              faceBiometric: normalizedData.faceBiometric ?? existing.faceBiometric,
+              contractHistory: normalizedData.contractHistory ?? existing.contractHistory,
+              originApplicantCode:
+                normalizedData.originApplicantCode ?? existing.originApplicantCode,
+              applicantId: normalizedData.applicantId ?? existing.applicantId,
+              portalPassword: normalizedData.portalPassword ?? existing.portalPassword,
+              accountDisabled: normalizedData.accountDisabled ?? existing.accountDisabled,
+              passwordResetAt: normalizedData.passwordResetAt ?? existing.passwordResetAt,
+              isNewHire: normalizedData.isNewHire ?? existing.isNewHire,
+              createdAtIso: normalizedData.createdAtIso ?? existing.createdAtIso,
+              savedSignatureDataUrl:
+                normalizedData.savedSignatureDataUrl ?? existing.savedSignatureDataUrl,
               savedSignatureUpdatedAt:
-                data.savedSignatureUpdatedAt ?? existing.savedSignatureUpdatedAt,
-              bpjsKesehatanCardName: data.bpjsKesehatanCardName ?? existing.bpjsKesehatanCardName,
+                normalizedData.savedSignatureUpdatedAt ?? existing.savedSignatureUpdatedAt,
+              bpjsKesehatanCardName:
+                normalizedData.bpjsKesehatanCardName ?? existing.bpjsKesehatanCardName,
               bpjsKesehatanCardDataUrl:
-                data.bpjsKesehatanCardDataUrl ?? existing.bpjsKesehatanCardDataUrl,
+                normalizedData.bpjsKesehatanCardDataUrl ?? existing.bpjsKesehatanCardDataUrl,
               bpjsKetenagakerjaanCardName:
-                data.bpjsKetenagakerjaanCardName ?? existing.bpjsKetenagakerjaanCardName,
+                normalizedData.bpjsKetenagakerjaanCardName ?? existing.bpjsKetenagakerjaanCardName,
               bpjsKetenagakerjaanCardDataUrl:
-                data.bpjsKetenagakerjaanCardDataUrl ?? existing.bpjsKetenagakerjaanCardDataUrl,
+                normalizedData.bpjsKetenagakerjaanCardDataUrl ??
+                existing.bpjsKetenagakerjaanCardDataUrl,
             }
           : e
       )
     );
+    setEntities((prev) => applyEmployeeHeadcountDelta(prev, existing, normalizedData));
     setContracts((prev) => {
       const matched = prev.find((c) => c.employeeCode === existing.employeeCode);
       if (!matched) {
-        return [buildSyncedContractRecord(data), ...prev];
+        return [buildSyncedContractRecord(normalizedData), ...prev];
       }
-      return prev.map((c) => (c.id === matched.id ? buildSyncedContractRecord(data, c.id) : c));
+      return prev.map((c) =>
+        c.id === matched.id ? buildSyncedContractRecord(normalizedData, c.id) : c
+      );
     });
     appendAudit(
       actorLabel,
       'Operasional',
-      `Memperbarui data induk karyawan (${data.employeeCode})`,
-      `${data.fullName} · ${data.entityName}`
+      `Memperbarui data induk karyawan (${normalizedData.employeeCode})`,
+      `${normalizedData.fullName} · ${normalizedData.entityName}`
     );
   };
 
@@ -905,6 +1165,7 @@ export function useWorkspaceStore() {
     const existing = employees.find((e) => e.id === id);
     if (!existing) return;
     setEmployees((prev) => prev.filter((e) => e.id !== id));
+    setEntities((prev) => applyEmployeeHeadcountDelta(prev, existing, null));
     setContracts((prev) => prev.filter((c) => c.employeeCode !== existing.employeeCode));
     appendAudit(
       actorLabel,
@@ -951,6 +1212,9 @@ export function useWorkspaceStore() {
   const toggleUserStatus = (userId: string, actorLabel: string) => {
     const found = users.find((u) => u.id === userId);
     if (!found) return;
+    if (isPortalRoleTemporarilyDisabled(found.role) && found.status !== 'Aktif') {
+      return;
+    }
     const nextStatus = found.status === 'Aktif' ? 'Nonaktif' : 'Aktif';
     setUsers((prev) =>
       prev.map((u) =>
@@ -1000,7 +1264,7 @@ export function useWorkspaceStore() {
       fullName: string;
       email: string;
       whatsappNumber?: string;
-      role: 'Master Admin' | 'Admin' | 'Rekruter';
+      role: 'Master Admin' | 'Admin' | 'Rekruter' | 'Payroll';
       employmentType: EmploymentCategory;
       assignedScopes: string[];
       portalPassword: string;
@@ -1035,6 +1299,7 @@ export function useWorkspaceStore() {
   const toggleEmployeeAccountStatus = (employeeId: string, actorLabel: string) => {
     const found = employees.find((e) => e.id === employeeId);
     if (!found) return;
+    if (found.status === 'Resign') return; // Resign accounts remain locked unless SDM status is changed back
     const isCurrentlyLocked = Boolean(found.accountDisabled) || found.status === 'Nonaktif';
     const nextDisabled = !isCurrentlyLocked;
     setEmployees((prev) =>
@@ -1158,6 +1423,9 @@ export function useWorkspaceStore() {
   const toggleApplicantAccountStatus = (applicantId: string, actorLabel: string) => {
     const found = applicants.find((a) => a.id === applicantId);
     if (!found) return;
+    if (isPortalRoleTemporarilyDisabled('Pelamar') && found.accountDisabled) {
+      return;
+    }
     const nextDisabled = !found.accountDisabled;
     setApplicants((prev) =>
       prev.map((a) => (a.id === applicantId ? { ...a, accountDisabled: nextDisabled } : a))
@@ -1280,9 +1548,29 @@ export function useWorkspaceStore() {
     const mm = String(now.getMinutes()).padStart(2, '0');
     const reviewedStamp = `Hari ini · ${hh}:${mm}`;
 
+    const quotaBefore = calculateEmployeeLeaveQuotaSummary(
+      found.employeeCode,
+      leaveAbsences,
+      policy.annualLeaveQuota
+    );
+    const deductsQuota = doesLeaveDeductAnnualQuota(found.type);
+    const takenDays = deductsQuota ? found.daysCount : 0;
+
     const nextLeaves: LeaveAbsenceRecord[] = leaveAbsences.map((l) =>
       l.id === id
-        ? { ...l, status: 'Disetujui' as const, reviewedBy: actorLabel, reviewedAt: reviewedStamp }
+        ? {
+            ...l,
+            status: 'Disetujui' as const,
+            reviewedBy: actorLabel,
+            reviewedAt: reviewedStamp,
+            approverHcName: l.approverHcName || actorLabel,
+            hcQuotaBefore: l.hcQuotaBefore ?? quotaBefore.remainingLeaveQuota,
+            hcQuotaTaken: takenDays,
+            hcQuotaRemaining: Math.max(
+              0,
+              (l.hcQuotaBefore ?? quotaBefore.remainingLeaveQuota) - takenDays
+            ),
+          }
         : l
     );
     setLeaveAbsences(nextLeaves);
@@ -1300,11 +1588,21 @@ export function useWorkspaceStore() {
     const quotaDetail =
       found.type === 'Izin Sakit'
         ? `Total Izin Sakit (SKD) disetujui: ${quotaAfter.approvedSickDays} hari · Sisa kuota cuti tahunan: ${quotaAfter.remainingLeaveQuota}/${quotaAfter.annualLeaveQuota} hari.`
-        : `Kuota cuti otomatis terpotong ${found.daysCount} hari · Sisa kuota cuti tahunan Anda: ${quotaAfter.remainingLeaveQuota}/${quotaAfter.annualLeaveQuota} hari.`;
+        : isPartialDayLeaveType(found.type)
+          ? `Izin parsial harian tidak memotong jatah cuti tahunan · Sisa kuota cuti tahunan Anda: ${quotaAfter.remainingLeaveQuota}/${quotaAfter.annualLeaveQuota} hari.`
+          : `Kuota cuti otomatis terpotong ${found.daysCount} hari · Sisa kuota cuti tahunan Anda: ${quotaAfter.remainingLeaveQuota}/${quotaAfter.annualLeaveQuota} hari.`;
+
+    const durationLabel = isPartialDayLeaveType(found.type)
+      ? found.type === 'Meninggalkan Pekerjaan' && found.leaveTimeStart && found.leaveTimeEnd
+        ? `${found.leaveTimeStart} s/d ${found.leaveTimeEnd}`
+        : found.timeDetail
+          ? `Jam ${found.timeDetail}`
+          : 'Parsial'
+      : `${found.daysCount} Hari`;
 
     pushNotification({
       type: 'leave-approved',
-      title: `${found.type} Disetujui — ${found.dateRange} (${found.daysCount} Hari)`,
+      title: `${found.type} Disetujui — ${found.dateRange} (${durationLabel})`,
       message: `Disetujui oleh ${actorLabel}. ${quotaDetail}`,
       targetMenu: 'emp-leave',
       employeeCode: found.employeeCode,
@@ -1316,7 +1614,7 @@ export function useWorkspaceStore() {
     appendAudit(
       actorLabel,
       'Operasional',
-      `Menyetujui ${found.type} (${found.dateRange} · ${found.daysCount} hari) — Sisa kuota cuti: ${quotaAfter.remainingLeaveQuota}/${quotaAfter.annualLeaveQuota} hari`,
+      `Menyetujui ${found.type} (${found.dateRange} · ${durationLabel}) — Sisa kuota cuti: ${quotaAfter.remainingLeaveQuota}/${quotaAfter.annualLeaveQuota} hari`,
       `${found.employeeName} (${found.employeeCode}) · ${found.entityName}`
     );
   };
@@ -1608,12 +1906,421 @@ export function useWorkspaceStore() {
     setVacancies(INITIAL_VACANCIES);
     setApplicants(INITIAL_APPLICANT_PROFILES);
     setApplications(INITIAL_JOB_APPLICATIONS);
+    setPayrollTariffs(INITIAL_PAYROLL_TARIFFS);
+    setClaimedPkwtCompensationNumbers([]);
+    setSettledResignEmployeeIds([]);
+    setActivityReports(INITIAL_ACTIVITY_REPORTS);
     appendAudit(
       actorLabel,
       'Keamanan',
       'Mereset data simulasi workspace ke kondisi awal bawaan sistem',
       INITIAL_SETTINGS.companyName
     );
+  };
+
+  // =========================================================================
+  // PAYROLL WORKFLOW ACTIONS (AUTO-CALC, EXCEL UPSERT, PKWT COMP, ACC)
+  // =========================================================================
+
+  const savePayrollTariffs = (nextTariffs: PayrollTariffConfig, actorLabel: string) => {
+    setPayrollTariffs(nextTariffs);
+    appendAudit(
+      actorLabel,
+      'Kebijakan',
+      'Memperbarui Master Tarif Payroll, UMR Regional, BPJS & PPh 21',
+      `${nextTariffs.regionalTiers.length} Tier UMR · Skema PPh 21 ${nextTariffs.pph21Scheme}`
+    );
+  };
+
+  const runPayrollCalculation = (
+    period: string,
+    targetEmployeeIds: string[] | undefined,
+    actorLabel: string
+  ): { ok: boolean; count: number; message: string } => {
+    const existingRun = payrollRuns.find((r) => r.period === period);
+    if (existingRun?.locked || existingRun?.status === 'Disetujui') {
+      return {
+        ok: false,
+        count: 0,
+        message: `Periode ${formatPayrollPeriodLabel(period)} sudah disetujui Master Admin & terkunci (anti-double).`,
+      };
+    }
+
+    const activeTargets = employees.filter(
+      (e) =>
+        isEmployeeEligibleForPayrollRun(e, period, settledResignEmployeeIds) &&
+        (!targetEmployeeIds || targetEmployeeIds.includes(e.id))
+    );
+
+    const generatedSlips = activeTargets.map((emp) => {
+      const existingDraft = payrollSlips.find(
+        (s) => s.id === buildSlipUniqueKey(period, emp.id)
+      );
+      return computePayrollSlip({
+        period,
+        employee: emp,
+        entities,
+        tariffs: payrollTariffs,
+        attendanceLogs,
+        leaveAbsences,
+        edits: existingDraft
+          ? {
+              baseSalaryOverride:
+                existingDraft.baseSalarySourceTag === 'Override Kontrak Individu'
+                  ? existingDraft.baseSalary
+                  : undefined,
+              prorataDaysOverride: existingDraft.prorataActiveDays,
+              fixedAllowance: existingDraft.fixedAllowance,
+              variableAllowance: existingDraft.variableAllowance,
+              overtimePay: existingDraft.overtimePay,
+              incentiveBonus: existingDraft.incentiveBonus,
+              pkwtCompensation: existingDraft.pkwtCompensation,
+              otherCompensation: existingDraft.otherCompensation,
+              loanKasbonDeduction: existingDraft.loanKasbonDeduction,
+              otherDeduction: existingDraft.otherDeduction,
+              notes: existingDraft.notes,
+            }
+          : {},
+        pkwtContractClaimedNumber: existingDraft?.pkwtContractClaimedNumber,
+        status: 'Draft',
+      });
+    });
+
+    const nextSlips = upsertPayrollSlipsIdempotent(payrollSlips, generatedSlips);
+    setPayrollSlips(nextSlips);
+    setPayrollRuns((prev) => {
+      const nextRun = summarizePayrollPeriodRun(period, nextSlips, {
+        ...(existingRun ?? {
+          period,
+          periodLabel: formatPayrollPeriodLabel(period),
+          status: 'Draft',
+          locked: false,
+          totalEmployees: 0,
+          totalGross: 0,
+          totalCompensation: 0,
+          totalBpjsEmployee: 0,
+          totalPph21: 0,
+          totalDeductions: 0,
+          totalThp: 0,
+          totalCompanyCost: 0,
+          sourceSummary: 'Dihitung Aplikasi',
+        }),
+        status: 'Draft',
+        locked: false,
+      });
+      return [nextRun, ...prev.filter((r) => r.period !== period)];
+    });
+    const resignIncludedCount = generatedSlips.filter(
+      (s) => s.settlementType === 'Final Settlement (Resign)'
+    ).length;
+    appendAudit(
+      actorLabel,
+      'Operasional',
+      `Menjalankan hitung otomatis Payroll periode ${formatPayrollPeriodLabel(period)} (${generatedSlips.length} karyawan${resignIncludedCount > 0 ? ` · ${resignIncludedCount} Resign Prorata` : ''})`,
+      period
+    );
+    return {
+      ok: true,
+      count: generatedSlips.length,
+      message: `Perhitungan otomatis selesai untuk ${generatedSlips.length} karyawan${resignIncludedCount > 0 ? ` (termasuk ${resignIncludedCount} Final Settlement Resign)` : ''} pada periode ${formatPayrollPeriodLabel(period)}.`,
+    };
+  };
+
+  const runResignFinalSettlement = (
+    period: string,
+    employeeId: string,
+    actorLabel: string
+  ): { ok: boolean; message: string; slip?: PayrollSlipRecord } => {
+    const existingRun = payrollRuns.find((r) => r.period === period);
+    if (existingRun?.locked || existingRun?.status === 'Disetujui') {
+      return {
+        ok: false,
+        message: `Periode ${formatPayrollPeriodLabel(period)} sudah disetujui & terkunci. Pilih periode aktif yang masih Draft.`,
+      };
+    }
+    const emp = employees.find((e) => e.id === employeeId);
+    if (!emp) return { ok: false, message: 'Data karyawan tidak ditemukan.' };
+    if (emp.status !== 'Resign') {
+      return {
+        ok: false,
+        message: `${emp.fullName} berstatus ${emp.status}, bukan Resign.`,
+      };
+    }
+    if (settledResignEmployeeIds.includes(emp.id)) {
+      return {
+        ok: false,
+        message: `Final Settlement untuk ${emp.fullName} (${emp.employeeCode}) sudah disetujui & dicairkan sebelumnya (Anti-Double Settlement).`,
+      };
+    }
+    const existingDraft = payrollSlips.find(
+      (s) => s.id === buildSlipUniqueKey(period, emp.id)
+    );
+    const slip = computePayrollSlip({
+      period,
+      employee: emp,
+      entities,
+      tariffs: payrollTariffs,
+      attendanceLogs,
+      leaveAbsences,
+      edits: {
+        fixedAllowance: existingDraft?.fixedAllowance ?? 0,
+        variableAllowance: existingDraft?.variableAllowance ?? 0,
+        overtimePay: existingDraft?.overtimePay ?? 0,
+        incentiveBonus: existingDraft?.incentiveBonus ?? 0,
+        pkwtCompensation: existingDraft?.pkwtCompensation ?? 0,
+        otherCompensation: existingDraft?.otherCompensation ?? 0,
+        loanKasbonDeduction: existingDraft?.loanKasbonDeduction ?? 0,
+        otherDeduction: existingDraft?.otherDeduction ?? 0,
+        notes:
+          existingDraft?.notes ||
+          `Final Settlement karyawan Resign${emp.resignDate ? ` (efektif ${formatIndonesianDate(emp.resignDate)})` : ''}`,
+      },
+      status: 'Draft',
+    });
+
+    const nextSlips = upsertPayrollSlipsIdempotent(payrollSlips, [slip]);
+    setPayrollSlips(nextSlips);
+    setPayrollRuns((prev) => {
+      const nextRun = summarizePayrollPeriodRun(period, nextSlips, {
+        ...(existingRun ?? {
+          period,
+          periodLabel: formatPayrollPeriodLabel(period),
+          status: 'Draft',
+          locked: false,
+          totalEmployees: 0,
+          totalGross: 0,
+          totalCompensation: 0,
+          totalBpjsEmployee: 0,
+          totalPph21: 0,
+          totalDeductions: 0,
+          totalThp: 0,
+          totalCompanyCost: 0,
+          sourceSummary: 'Dihitung Aplikasi',
+        }),
+        status: 'Draft',
+        locked: false,
+      });
+      return [nextRun, ...prev.filter((r) => r.period !== period)];
+    });
+    appendAudit(
+      actorLabel,
+      'Operasional',
+      `Menghitung Final Settlement (Prorata ${slip.prorataActiveDays}/${slip.prorataTotalDays} hari) untuk karyawan Resign ${emp.employeeCode}`,
+      `${emp.fullName} · ${formatPayrollPeriodLabel(period)}`
+    );
+    return {
+      ok: true,
+      slip,
+      message: `Final Settlement untuk ${emp.fullName} (${slip.prorataActiveDays}/${slip.prorataTotalDays} hari kerja) berhasil ditambahkan ke draft ${formatPayrollPeriodLabel(period)}.`,
+    };
+  };
+
+  const applyExcelPayrollImport = (
+    period: string,
+    importedSlips: PayrollSlipRecord[],
+    fileName: string,
+    actorLabel: string
+  ): { ok: boolean; count: number; message: string } => {
+    const existingRun = payrollRuns.find((r) => r.period === period);
+    if (existingRun?.locked || existingRun?.status === 'Disetujui') {
+      return {
+        ok: false,
+        count: 0,
+        message: `Periode ${formatPayrollPeriodLabel(period)} sudah terkunci setelah ACC Master Admin.`,
+      };
+    }
+    const cleanSlips = importedSlips.map((s) => ({
+      ...s,
+      period,
+      periodLabel: formatPayrollPeriodLabel(period),
+      status: 'Draft' as const,
+    }));
+    const nextSlips = upsertPayrollSlipsIdempotent(payrollSlips, cleanSlips);
+    setPayrollSlips(nextSlips);
+    setPayrollRuns((prev) => {
+      const nextRun = summarizePayrollPeriodRun(period, nextSlips, {
+        ...(existingRun ?? {
+          period,
+          periodLabel: formatPayrollPeriodLabel(period),
+          status: 'Draft',
+          locked: false,
+          totalEmployees: 0,
+          totalGross: 0,
+          totalCompensation: 0,
+          totalBpjsEmployee: 0,
+          totalPph21: 0,
+          totalDeductions: 0,
+          totalThp: 0,
+          totalCompanyCost: 0,
+          sourceSummary: 'Import Excel',
+        }),
+        status: 'Draft',
+        locked: false,
+      });
+      return [nextRun, ...prev.filter((r) => r.period !== period)];
+    });
+    appendAudit(
+      actorLabel,
+      'Operasional',
+      `Mengimpor Excel Payroll (${fileName}) untuk ${cleanSlips.length} karyawan (${formatPayrollPeriodLabel(period)})`,
+      period
+    );
+    return {
+      ok: true,
+      count: cleanSlips.length,
+      message: `${cleanSlips.length} slip gaji dari ${fileName} berhasil diterapkan ke draft ${formatPayrollPeriodLabel(period)} tanpa duplikasi.`,
+    };
+  };
+
+  const updateSinglePayrollSlip = (
+    period: string,
+    employeeId: string,
+    edits: PayrollSlipEditableInput & { pkwtContractClaimedNumber?: string },
+    actorLabel: string
+  ): { ok: boolean; message: string } => {
+    const existingRun = payrollRuns.find((r) => r.period === period);
+    if (existingRun?.locked || existingRun?.status === 'Disetujui') {
+      return { ok: false, message: 'Slip periode yang sudah di-ACC bersifat read-only.' };
+    }
+    const emp = employees.find((e) => e.id === employeeId);
+    if (!emp) return { ok: false, message: 'Data karyawan tidak ditemukan.' };
+
+    if (
+      edits.pkwtCompensation &&
+      edits.pkwtCompensation > 0 &&
+      edits.pkwtContractClaimedNumber &&
+      claimedPkwtCompensationNumbers.includes(edits.pkwtContractClaimedNumber)
+    ) {
+      return {
+        ok: false,
+        message: `Kompensasi PKWT kontrak ${edits.pkwtContractClaimedNumber} sudah pernah dicairkan sebelumnya (Anti-Double).`,
+      };
+    }
+
+    const updatedSlip = computePayrollSlip({
+      period,
+      employee: emp,
+      entities,
+      tariffs: payrollTariffs,
+      attendanceLogs,
+      leaveAbsences,
+      edits,
+      pkwtContractClaimedNumber: edits.pkwtContractClaimedNumber,
+      status: 'Draft',
+    });
+
+    const nextSlips = upsertPayrollSlipsIdempotent(payrollSlips, [updatedSlip]);
+    setPayrollSlips(nextSlips);
+    setPayrollRuns((prev) => {
+      const nextRun = summarizePayrollPeriodRun(period, nextSlips, {
+        ...(existingRun ?? {
+          period,
+          periodLabel: formatPayrollPeriodLabel(period),
+          status: 'Draft',
+          locked: false,
+          totalEmployees: 0,
+          totalGross: 0,
+          totalCompensation: 0,
+          totalBpjsEmployee: 0,
+          totalPph21: 0,
+          totalDeductions: 0,
+          totalThp: 0,
+          totalCompanyCost: 0,
+          sourceSummary: 'Dihitung Aplikasi',
+        }),
+        status: 'Draft',
+        locked: false,
+      });
+      return [nextRun, ...prev.filter((r) => r.period !== period)];
+    });
+    appendAudit(
+      actorLabel,
+      'Operasional',
+      `Menyesuaikan rincian slip gaji ${emp.employeeCode} (${formatPayrollPeriodLabel(period)})`,
+      emp.fullName
+    );
+    return { ok: true, message: `Slip ${emp.fullName} diperbarui.` };
+  };
+
+  const submitPayrollRunForApproval = (
+    period: string,
+    actorLabel: string
+  ): { ok: boolean; message: string } => {
+    const existingRun = payrollRuns.find((r) => r.period === period);
+    if (existingRun?.locked || existingRun?.status === 'Disetujui') {
+      return { ok: false, message: 'Periode ini sudah disetujui dan terkunci.' };
+    }
+    const periodSlips = payrollSlips.filter((s) => s.period === period);
+    if (periodSlips.length === 0) {
+      return {
+        ok: false,
+        message: 'Belum ada data slip gaji pada periode ini. Klik Hitung Otomatis atau Impor Excel terlebih dahulu.',
+      };
+    }
+    const submittedSlips: PayrollSlipRecord[] = payrollSlips.map((s) =>
+      s.period === period ? { ...s, status: 'Menunggu ACC' } : s
+    );
+    setPayrollSlips(submittedSlips);
+    const nowStamp = `Hari ini · ${String(new Date().getHours()).padStart(2, '0')}:${String(
+      new Date().getMinutes()
+    ).padStart(2, '0')}`;
+    const approvalId = `apr-pay-${period}-${Date.now()}`;
+    const periodLabel = formatPayrollPeriodLabel(period);
+    const summary = summarizePayrollPeriodRun(period, submittedSlips, {
+      ...(existingRun ?? {
+        period,
+        periodLabel,
+        status: 'Menunggu ACC',
+        locked: false,
+        totalEmployees: periodSlips.length,
+        totalGross: 0,
+        totalCompensation: 0,
+        totalBpjsEmployee: 0,
+        totalPph21: 0,
+        totalDeductions: 0,
+        totalThp: 0,
+        totalCompanyCost: 0,
+        sourceSummary: 'Dihitung Aplikasi',
+      }),
+      status: 'Menunggu ACC',
+      locked: false,
+      submittedBy: actorLabel,
+      submittedAt: nowStamp,
+      approvalRequestId: approvalId,
+    });
+    setPayrollRuns((prev) => [summary, ...prev.filter((r) => r.period !== period)]);
+
+    setApprovals((prev) => [
+      {
+        id: approvalId,
+        title: `Pengesahan Payroll Periode ${period} · ${periodSlips.length} Karyawan`,
+        requester: actorLabel,
+        requesterRole: 'Payroll',
+        entityName: `${periodLabel} · Total THP Rp ${summary.totalThp.toLocaleString('id-ID')}`,
+        category: 'Payroll',
+        submittedAt: nowStamp,
+        status: 'Menunggu',
+      },
+      ...prev,
+    ]);
+    pushNotification({
+      type: 'payroll-submitted',
+      title: `Pengajuan ACC Payroll ${periodLabel}`,
+      message: `${periodSlips.length} karyawan · Total THP Rp ${summary.totalThp.toLocaleString('id-ID')}. Menunggu pengesahan Master Admin.`,
+      targetMenu: 'overview',
+      entityName: `${periodLabel} · Total THP Rp ${summary.totalThp.toLocaleString('id-ID')}`,
+      recipientRole: 'master-admin',
+    });
+    appendAudit(
+      actorLabel,
+      'Persetujuan',
+      `Mengajukan ACC Payroll periode ${periodLabel} ke Master Admin`,
+      `${periodSlips.length} Karyawan`
+    );
+    return {
+      ok: true,
+      message: `Payroll periode ${periodLabel} berhasil diajukan ke Master Admin untuk ACC.`,
+    };
   };
 
   // =========================================================================
@@ -2228,6 +2935,7 @@ export function useWorkspaceStore() {
     };
 
     setEmployees((prev) => [createdEmployee, ...prev]);
+    setEntities((prev) => applyEmployeeHeadcountDelta(prev, null, createdEmployee));
     setContracts((prev) => [buildSyncedContractRecord(employeeFormPayload), ...prev]);
 
     const newOnboarding: OnboardingCandidateRecord = {
@@ -2557,13 +3265,25 @@ export function useWorkspaceStore() {
   const submitEmployeeLeaveRequest = (
     employeeCode: string,
     input: {
-      type: 'Cuti Tahunan' | 'Izin Sakit' | 'Izin Keperluan';
+      type: LeaveRequestType;
       dateRange: string;
       daysCount: number;
       reason: string;
       skdFileName?: string;
       skdFileDataUrl?: string;
       doctorOrClinicName?: string;
+      categoryDetail?: string;
+      startDate?: string;
+      endDate?: string;
+      returnToWorkDate?: string;
+      timeDetail?: string;
+      leaveTimeStart?: string;
+      leaveTimeEnd?: string;
+      contactPhone?: string;
+      submittedCity?: string;
+      replacementStaff?: LeaveReplacementStaff;
+      approverDirectName?: string;
+      approverAreaHeadName?: string;
     },
     actorLabel: string
   ): { ok: boolean; message: string } => {
@@ -2577,7 +3297,10 @@ export function useWorkspaceStore() {
       leaveAbsences,
       policy.annualLeaveQuota
     );
-    const cleanDays = Math.max(1, Math.round(Number(input.daysCount) || 1));
+    const partialDay = isPartialDayLeaveType(input.type);
+    const cleanDays = partialDay
+      ? Math.max(0, Math.round(Number(input.daysCount) || 0))
+      : Math.max(1, Math.round(Number(input.daysCount) || 1));
 
     const validation = validateLeaveRequestSubmission({
       type: input.type,
@@ -2586,6 +3309,9 @@ export function useWorkspaceStore() {
       reason: input.reason,
       skdFileName: input.skdFileName,
       skdFileDataUrl: input.skdFileDataUrl,
+      timeDetail: input.timeDetail,
+      leaveTimeStart: input.leaveTimeStart,
+      leaveTimeEnd: input.leaveTimeEnd,
       remainingLeaveQuota: quotaSummary.remainingLeaveQuota,
     });
     if (!validation.ok) {
@@ -2613,6 +3339,11 @@ export function useWorkspaceStore() {
           })
         : undefined;
 
+    const deductsQuota = doesLeaveDeductAnnualQuota(input.type);
+    const hcQuotaBefore = quotaSummary.remainingLeaveQuota;
+    const hcQuotaTaken = deductsQuota ? cleanDays : 0;
+    const hcQuotaRemaining = Math.max(0, hcQuotaBefore - hcQuotaTaken);
+
     const created: LeaveAbsenceRecord = {
       id: `lv-${Date.now()}`,
       employeeCode: target.employeeCode,
@@ -2629,14 +3360,59 @@ export function useWorkspaceStore() {
       doctorOrClinicName:
         input.type === 'Izin Sakit' ? input.doctorOrClinicName?.trim() : undefined,
       submittedAt: submittedStamp,
+      division: target.department,
+      position: target.position,
+      unitKerja: target.placementName || target.entityName,
+      categoryDetail:
+        input.categoryDetail?.trim() ||
+        (input.type === 'Cuti Tahunan'
+          ? 'Cuti Tahunan'
+          : input.type === 'Izin Keperluan'
+            ? input.reason.trim().slice(0, 32)
+            : undefined),
+      startDate: input.startDate?.trim() || undefined,
+      endDate: input.endDate?.trim() || undefined,
+      returnToWorkDate: input.returnToWorkDate?.trim() || undefined,
+      timeDetail:
+        input.type === 'Datang Terlambat' || input.type === 'Pulang Lebih Awal'
+          ? input.timeDetail?.trim()
+          : undefined,
+      leaveTimeStart:
+        input.type === 'Meninggalkan Pekerjaan' ? input.leaveTimeStart?.trim() : undefined,
+      leaveTimeEnd:
+        input.type === 'Meninggalkan Pekerjaan' ? input.leaveTimeEnd?.trim() : undefined,
+      contactPhone: input.contactPhone?.trim() || target.whatsappNumber,
+      submittedCity: input.submittedCity?.trim() || 'Jakarta',
+      hcQuotaBefore,
+      hcQuotaTaken,
+      hcQuotaRemaining,
+      replacementStaff:
+        input.replacementStaff && input.replacementStaff.fullName.trim()
+          ? {
+              employeeCode: input.replacementStaff.employeeCode.trim(),
+              fullName: input.replacementStaff.fullName.trim(),
+              division: input.replacementStaff.division.trim(),
+              position: input.replacementStaff.position.trim(),
+              unitKerja: input.replacementStaff.unitKerja.trim(),
+            }
+          : undefined,
+      approverDirectName: input.approverDirectName?.trim() || undefined,
+      approverAreaHeadName: input.approverAreaHeadName?.trim() || undefined,
+      applicantSignatureDataUrl: target.savedSignatureDataUrl,
     };
 
     setLeaveAbsences((prev) => [created, ...prev]);
 
+    const summaryMetric = partialDay
+      ? created.type === 'Meninggalkan Pekerjaan'
+        ? `${created.leaveTimeStart} s/d ${created.leaveTimeEnd}`
+        : `Jam ${created.timeDetail}`
+      : `${created.daysCount} hari`;
+
     pushNotification({
       type: 'leave-submitted',
       title: `Pengajuan ${created.type} Baru: ${target.fullName} (${target.employeeCode})`,
-      message: `${created.dateRange} (${created.daysCount} hari)${
+      message: `${created.dateRange} (${summaryMetric})${
         created.skdFileName ? ` · Lampiran SKD: ${created.skdFileName}` : ''
       } · ${target.entityName}. Klik untuk verifikasi di Operasional.`,
       targetMenu: 'monitoring',
@@ -2649,7 +3425,7 @@ export function useWorkspaceStore() {
     appendAudit(
       actorLabel,
       'Operasional',
-      `Mengajukan ${created.type} (${created.dateRange} · ${created.daysCount} hari${
+      `Mengajukan ${created.type} (${created.dateRange} · ${summaryMetric}${
         created.skdFileName ? ` · SKD: ${created.skdFileName}` : ''
       })`,
       `${target.fullName} · ${target.entityName}`
@@ -2659,8 +3435,8 @@ export function useWorkspaceStore() {
       ok: true,
       message:
         created.type === 'Izin Sakit'
-          ? `Pengajuan Izin Sakit (${created.dateRange} · ${created.daysCount} hari) beserta lampiran SKD (${created.skdFileName}) berhasil dikirim ke notifikasi & menu Operasional Admin.`
-          : `Pengajuan ${created.type} (${created.dateRange} · ${created.daysCount} hari) berhasil dikirim ke notifikasi & antrean persetujuan Operasional Admin.`,
+          ? `Pengajuan Izin Sakit (${created.dateRange} · ${created.daysCount} hari) beserta lampiran SKD (${created.skdFileName}) berhasil dikirim. Formulir PDF SWAPRO siap diunduh.`
+          : `Pengajuan ${created.type} (${created.dateRange} · ${summaryMetric}) berhasil dikirim ke antrean persetujuan. Formulir PDF SWAPRO siap diunduh.`,
     };
   };
 
@@ -2735,6 +3511,145 @@ export function useWorkspaceStore() {
     );
   };
 
+  const formatNowActivityStamp = (): string => {
+    const now = new Date();
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+    const dd = String(now.getDate()).padStart(2, '0');
+    const mmm = months[now.getMonth()] ?? 'Nov';
+    const yyyy = now.getFullYear();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    return `${dd} ${mmm} ${yyyy} · ${hh}:${mm}`;
+  };
+
+  const submitEmployeeActivityReport = (
+    employeeId: string,
+    input: EmployeeActivityReportInput,
+    actorLabel: string
+  ): { ok: boolean; message: string; report?: EmployeeActivityReportRecord } => {
+    const target = employees.find((e) => e.id === employeeId);
+    if (!target) return { ok: false, message: 'Data karyawan tidak ditemukan.' };
+    const validation = validateActivityReportInput(input);
+    if (!validation.isValid) {
+      const firstErr = Object.values(validation.errors)[0] ?? 'Lengkapi rincian laporan kegiatan.';
+      return { ok: false, message: firstErr };
+    }
+    const stamp = formatNowActivityStamp();
+    const created: EmployeeActivityReportRecord = {
+      id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      employeeId: target.id,
+      employeeCode: target.employeeCode,
+      employeeName: target.fullName,
+      position: target.position,
+      employmentType: target.employmentType,
+      entityName: target.entityName,
+      targetEntityName: input.targetEntityName.trim(),
+      targetBranchName: input.targetBranchName.trim(),
+      activityDate: input.activityDate.trim(),
+      title: input.title.trim(),
+      description: input.description.trim(),
+      progressStatus: input.progressStatus,
+      attachmentFileName: input.attachmentFileName?.trim() || undefined,
+      attachmentDataUrl: input.attachmentDataUrl?.trim() || undefined,
+      photoCapturedAt: input.photoCapturedAt?.trim() || undefined,
+      photoGpsLat: input.photoGpsLat,
+      photoGpsLng: input.photoGpsLng,
+      photoGpsAccuracyMeters: input.photoGpsAccuracyMeters,
+      photoGpsAddress: input.photoGpsAddress?.trim() || undefined,
+      photoGpsStatus: input.photoGpsStatus,
+      createdAt: stamp,
+      updatedAt: stamp,
+      updateCount: 0,
+    };
+    setActivityReports((prev) => [created, ...prev]);
+    pushNotification({
+      type: 'activity-report-updated',
+      title: `Laporan Kegiatan Baru: ${target.fullName} (${target.employeeCode})`,
+      message: `${created.title} · ${created.targetEntityName} (${created.targetBranchName}) · Progres: ${created.progressStatus}.`,
+      targetMenu: 'monitoring',
+      employeeCode: target.employeeCode,
+      entityName: created.targetEntityName,
+      recipientRole: 'admin',
+    });
+    appendAudit(
+      actorLabel,
+      'Operasional',
+      `Mengirim laporan kegiatan (${created.progressStatus}): ${created.title}`,
+      `${created.targetEntityName} · ${created.targetBranchName}`
+    );
+    return {
+      ok: true,
+      message: `Laporan kegiatan "${created.title}" berhasil tercatat untuk ${created.targetEntityName} (${created.targetBranchName}).`,
+      report: created,
+    };
+  };
+
+  const updateEmployeeActivityReport = (
+    reportId: string,
+    employeeId: string,
+    input: EmployeeActivityReportInput,
+    actorLabel: string
+  ): { ok: boolean; message: string; report?: EmployeeActivityReportRecord } => {
+    const existing = activityReports.find((r) => r.id === reportId);
+    if (!existing) return { ok: false, message: 'Laporan kegiatan tidak ditemukan.' };
+    if (existing.employeeId !== employeeId) {
+      return { ok: false, message: 'Anda hanya dapat memperbarui laporan kegiatan milik sendiri.' };
+    }
+    const validation = validateActivityReportInput(input);
+    if (!validation.isValid) {
+      const firstErr = Object.values(validation.errors)[0] ?? 'Lengkapi rincian pembaruan kegiatan.';
+      return { ok: false, message: firstErr };
+    }
+    const stamp = formatNowActivityStamp();
+    const updatedRecord: EmployeeActivityReportRecord = {
+      ...existing,
+      activityDate: input.activityDate.trim(),
+      targetEntityName: input.targetEntityName.trim(),
+      targetBranchName: input.targetBranchName.trim(),
+      title: input.title.trim(),
+      description: input.description.trim(),
+      progressStatus: input.progressStatus,
+      attachmentFileName:
+        input.attachmentFileName !== undefined
+          ? input.attachmentFileName.trim() || undefined
+          : existing.attachmentFileName,
+      attachmentDataUrl:
+        input.attachmentDataUrl !== undefined
+          ? input.attachmentDataUrl.trim() || undefined
+          : existing.attachmentDataUrl,
+      photoCapturedAt:
+        input.photoCapturedAt !== undefined
+          ? input.photoCapturedAt.trim() || undefined
+          : existing.photoCapturedAt,
+      photoGpsLat: input.photoGpsLat !== undefined ? input.photoGpsLat : existing.photoGpsLat,
+      photoGpsLng: input.photoGpsLng !== undefined ? input.photoGpsLng : existing.photoGpsLng,
+      photoGpsAccuracyMeters:
+        input.photoGpsAccuracyMeters !== undefined
+          ? input.photoGpsAccuracyMeters
+          : existing.photoGpsAccuracyMeters,
+      photoGpsAddress:
+        input.photoGpsAddress !== undefined
+          ? input.photoGpsAddress.trim() || undefined
+          : existing.photoGpsAddress,
+      photoGpsStatus:
+        input.photoGpsStatus !== undefined ? input.photoGpsStatus : existing.photoGpsStatus,
+      updatedAt: stamp,
+      updateCount: existing.updateCount + 1,
+    };
+    setActivityReports((prev) => prev.map((r) => (r.id === reportId ? updatedRecord : r)));
+    appendAudit(
+      actorLabel,
+      'Operasional',
+      `Memperbarui laporan kegiatan (${updatedRecord.progressStatus}): ${updatedRecord.title}`,
+      `${updatedRecord.targetEntityName} · ${updatedRecord.targetBranchName}`
+    );
+    return {
+      ok: true,
+      message: `Pembaruan kegiatan "${updatedRecord.title}" berhasil disimpan (${updatedRecord.progressStatus}).`,
+      report: updatedRecord,
+    };
+  };
+
   const liveSnapshots = useMemo(
     () =>
       buildLiveOperationalSnapshots({
@@ -2767,6 +3682,7 @@ export function useWorkspaceStore() {
     applicants,
     applications,
     notifications,
+    activityReports,
     markNotificationRead,
     markAllNotificationsRead,
     markEmployeeReviewed,
@@ -2823,6 +3739,19 @@ export function useWorkspaceStore() {
     submitEmployeeLeaveRequest,
     clarifyEmployeeAlpha,
     updateEmployeeSelfProfile,
+    submitEmployeeActivityReport,
+    updateEmployeeActivityReport,
+    payrollTariffs,
+    payrollSlips,
+    payrollRuns,
+    claimedPkwtCompensationNumbers,
+    settledResignEmployeeIds,
+    savePayrollTariffs,
+    runPayrollCalculation,
+    runResignFinalSettlement,
+    applyExcelPayrollImport,
+    updateSinglePayrollSlip,
+    submitPayrollRunForApproval,
   };
 }
 

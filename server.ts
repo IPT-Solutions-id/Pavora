@@ -8,6 +8,19 @@ import {
   generatePkwtPdfBytes,
 } from './src/utils/pkwtPdfGenerator.ts';
 import type { PkwtPdfAssets } from './src/utils/pkwtPdfGenerator.ts';
+import {
+  formatReverseGeocodeAddress,
+  type ReverseGeocodeAddressParts,
+} from './src/utils/activityTimestampCamera.ts';
+
+interface ReverseGeocodeCacheEntry {
+  address: string;
+  expiresAt: number;
+}
+
+const REVERSE_GEOCODE_CACHE = new Map<string, ReverseGeocodeCacheEntry>();
+const REVERSE_GEOCODE_TTL_MS = 30 * 60 * 1000;
+const REVERSE_GEOCODE_MAX_ENTRIES = 500;
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT_DIR = process.cwd();
@@ -103,6 +116,93 @@ async function startServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', aiVisionAvailable: Boolean(process.env.GEMINI_API_KEY?.trim()) });
+  });
+
+  app.get('/api/geocode/reverse', async (req, res) => {
+    const rawLat = typeof req.query.lat === 'string' ? req.query.lat.trim() : '';
+    const rawLng = typeof req.query.lng === 'string' ? req.query.lng.trim() : '';
+    const lat = Number(rawLat);
+    const lng = Number(rawLng);
+
+    if (
+      !rawLat ||
+      !rawLng ||
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng) ||
+      lat < -90 ||
+      lat > 90 ||
+      lng < -180 ||
+      lng > 180
+    ) {
+      res.status(400).json({ ok: false, error: 'Koordinat lat/lng tidak valid.' });
+      return;
+    }
+
+    const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+    const now = Date.now();
+    const cached = REVERSE_GEOCODE_CACHE.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.json({ ok: true, address: cached.address, cached: true });
+      return;
+    }
+
+    try {
+      const upstreamUrl = new URL('https://nominatim.openstreetmap.org/reverse');
+      upstreamUrl.searchParams.set('format', 'jsonv2');
+      upstreamUrl.searchParams.set('lat', lat.toFixed(6));
+      upstreamUrl.searchParams.set('lon', lng.toFixed(6));
+      upstreamUrl.searchParams.set('zoom', '18');
+      upstreamUrl.searchParams.set('addressdetails', '1');
+      upstreamUrl.searchParams.set('accept-language', 'id');
+
+      const upstreamRes = await fetch(upstreamUrl.toString(), {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'PEVORA-HRIS/1.0 (PT Iskandar Pratama Teknologi; reverse-geocode)',
+        },
+        signal: AbortSignal.timeout(6500),
+      });
+
+      if (!upstreamRes.ok) {
+        res.status(502).json({
+          ok: false,
+          address: '',
+          error: 'Layanan alamat lokasi sedang sibuk.',
+        });
+        return;
+      }
+
+      const payload = (await upstreamRes.json()) as {
+        address?: ReverseGeocodeAddressParts;
+        display_name?: string;
+      };
+      const formattedAddress = formatReverseGeocodeAddress(
+        payload.address,
+        payload.display_name
+      );
+
+      if (formattedAddress) {
+        if (REVERSE_GEOCODE_CACHE.size >= REVERSE_GEOCODE_MAX_ENTRIES) {
+          const oldestKey = REVERSE_GEOCODE_CACHE.keys().next().value;
+          if (oldestKey) REVERSE_GEOCODE_CACHE.delete(oldestKey);
+        }
+        REVERSE_GEOCODE_CACHE.set(cacheKey, {
+          address: formattedAddress,
+          expiresAt: now + REVERSE_GEOCODE_TTL_MS,
+        });
+      }
+
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.json({ ok: true, address: formattedAddress, cached: false });
+    } catch {
+      res.status(504).json({
+        ok: false,
+        address: '',
+        error: 'Timeout saat mengambil alamat lokasi.',
+      });
+    }
   });
 
   app.post('/api/ocr/identity', async (req, res) => {

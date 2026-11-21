@@ -30,6 +30,7 @@ import {
   summarizePortalAccountStats,
 } from '../../data/masterAdminData';
 import { ApplicantProfileRecord } from '../../data/recruitmentData';
+import { isPortalRoleTemporarilyDisabled } from '../../utils/validation';
 
 interface UsersRbacPanelProps {
   users: UserAccountRecord[];
@@ -50,7 +51,7 @@ interface UsersRbacPanelProps {
     fullName: string;
     email: string;
     whatsappNumber?: string;
-    role: 'Master Admin' | 'Admin' | 'Rekruter';
+    role: 'Master Admin' | 'Admin' | 'Rekruter' | 'Payroll';
     employmentType: EmploymentCategory;
     assignedScopes: string[];
     portalPassword: string;
@@ -63,7 +64,7 @@ interface UsersRbacPanelProps {
 
 type AccessAccountTab = 'internal' | 'employees' | 'applicants';
 
-type InternalRoleFilter = 'Semua' | 'Master Admin' | 'Admin' | 'Rekruter';
+type InternalRoleFilter = 'Semua' | 'Master Admin' | 'Admin' | 'Rekruter' | 'Payroll';
 
 type EmployeeAccountFilter =
   | 'Semua'
@@ -77,12 +78,14 @@ const INTERNAL_ROLE_FILTERS: InternalRoleFilter[] = [
   'Master Admin',
   'Admin',
   'Rekruter',
+  'Payroll',
 ];
 
-const INTERNAL_ASSIGNABLE_ROLES: Array<'Master Admin' | 'Admin' | 'Rekruter'> = [
+const INTERNAL_ASSIGNABLE_ROLES: Array<'Master Admin' | 'Admin' | 'Rekruter' | 'Payroll'> = [
   'Master Admin',
   'Admin',
   'Rekruter',
+  'Payroll',
 ];
 
 const EMPLOYEE_ACCOUNT_FILTERS: EmployeeAccountFilter[] = [
@@ -132,7 +135,7 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
   const [newInternalName, setNewInternalName] = useState('');
   const [newInternalEmail, setNewInternalEmail] = useState('');
   const [newInternalWhatsapp, setNewInternalWhatsapp] = useState('');
-  const [newInternalRole, setNewInternalRole] = useState<'Master Admin' | 'Admin' | 'Rekruter'>(
+  const [newInternalRole, setNewInternalRole] = useState<'Master Admin' | 'Admin' | 'Rekruter' | 'Payroll'>(
     'Admin'
   );
   const [newInternalPassword, setNewInternalPassword] = useState('1234');
@@ -145,7 +148,11 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
   const stats = summarizePortalAccountStats(users, employees, applicants);
 
   const internalUsers = users.filter(
-    (u) => u.role === 'Master Admin' || u.role === 'Admin' || u.role === 'Rekruter'
+    (u) =>
+      u.role === 'Master Admin' ||
+      u.role === 'Admin' ||
+      u.role === 'Rekruter' ||
+      u.role === 'Payroll'
   );
 
   const visibleInternalUsers = internalUsers.filter((u) => {
@@ -170,7 +177,7 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
   };
 
   const isEmployeeLocked = (emp: EmployeeRecord): boolean =>
-    Boolean(emp.accountDisabled) || emp.status === 'Nonaktif';
+    Boolean(emp.accountDisabled) || emp.status === 'Nonaktif' || emp.status === 'Resign';
 
   const visibleEmployees = employees.filter((emp) => {
     const locked = isEmployeeLocked(emp);
@@ -292,8 +299,9 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
               {stats.totalActiveAccounts}
             </p>
             <p className="text-[11px] text-[#64748B] mt-1 tabular-nums">
-              {stats.activeInternalCount} Pengelola · {stats.activeEmployeeCount} Karyawan ·{' '}
-              {stats.activeApplicantCount} Pelamar
+              {stats.activeInternalCount} Pengelola · {stats.activeEmployeeCount} Karyawan
+              {!isPortalRoleTemporarilyDisabled('Pelamar') &&
+                ` · ${stats.activeApplicantCount} Pelamar`}
             </p>
           </div>
           <div className="p-2.5 bg-[#EAF2FF] text-[#1468E8] rounded-[4px] shrink-0">
@@ -517,7 +525,7 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
           >
             <div className="flex items-center justify-between">
               <p className="font-bold text-[#102B69]">
-                Tambah Akun Pengelola Baru (Master Admin / Admin / Rekruter)
+                Tambah Akun Pengelola Baru (Master Admin / Admin / Payroll)
               </p>
               {addInternalError && (
                 <p className="font-semibold text-[#DC3545]">{addInternalError}</p>
@@ -612,12 +620,14 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                     value={newInternalRole}
                     onChange={(e) =>
                       setNewInternalRole(
-                        e.target.value as 'Master Admin' | 'Admin' | 'Rekruter'
+                        e.target.value as 'Master Admin' | 'Admin' | 'Rekruter' | 'Payroll'
                       )
                     }
                     className="w-full px-2.5 py-2 bg-white border border-[#E2E8F0] rounded-[4px] text-[#102B69] font-medium"
                   >
-                    {INTERNAL_ASSIGNABLE_ROLES.map((r) => (
+                    {INTERNAL_ASSIGNABLE_ROLES.filter(
+                      (r) => !isPortalRoleTemporarilyDisabled(r)
+                    ).map((r) => (
                       <option key={r} value={r}>
                         {r}
                       </option>
@@ -819,16 +829,29 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                             </div>
                           </td>
                           <td className="py-3.5 px-4 whitespace-nowrap">
-                            <span
-                              className={`text-xs font-bold ${
-                                user.status === 'Aktif' ? 'text-[#16A36A]' : 'text-[#DC3545]'
-                              }`}
-                            >
-                              {user.status}
-                            </span>
-                            <p className="text-[11px] text-[#64748B] tabular-nums">
-                              {user.lastActive}
-                            </p>
+                            {isPortalRoleTemporarilyDisabled(user.role) ? (
+                              <>
+                                <span className="text-xs font-bold text-[#DC3545]">
+                                  Nonaktif Sementara
+                                </span>
+                                <p className="text-[11px] text-[#64748B] tabular-nums">
+                                  Role diblokir · Data aman
+                                </p>
+                              </>
+                            ) : (
+                              <>
+                                <span
+                                  className={`text-xs font-bold ${
+                                    user.status === 'Aktif' ? 'text-[#16A36A]' : 'text-[#DC3545]'
+                                  }`}
+                                >
+                                  {user.status}
+                                </span>
+                                <p className="text-[11px] text-[#64748B] tabular-nums">
+                                  {user.lastActive}
+                                </p>
+                              </>
+                            )}
                           </td>
                           <td className="py-3.5 px-6 text-right whitespace-nowrap">
                             <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
@@ -850,34 +873,48 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                                 <Mail className="w-3.5 h-3.5 text-[#1468E8]" aria-hidden="true" />
                                 <span>Email</span>
                               </a>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onToggleUserStatus(user.id);
-                                  setFeedbackBanner(
-                                    `Status akun ${user.fullName} diubah menjadi ${
-                                      user.status === 'Aktif' ? 'Nonaktif' : 'Aktif'
-                                    }.`
-                                  );
-                                }}
-                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-[4px] border cursor-pointer transition-colors ${
-                                  user.status === 'Aktif'
-                                    ? 'text-[#DC3545] bg-[#FEF2F2] hover:bg-[#FEE2E2] border-[#FECACA]'
-                                    : 'text-[#16A36A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border-[#BBF7D0]'
-                                }`}
-                              >
-                                {user.status === 'Aktif' ? (
-                                  <>
-                                    <Lock className="w-3 h-3" aria-hidden="true" />
-                                    <span>Nonaktifkan</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Unlock className="w-3 h-3" aria-hidden="true" />
-                                    <span>Aktifkan Akun</span>
-                                  </>
-                                )}
-                              </button>
+                              {(() => {
+                                const roleLocked = isPortalRoleTemporarilyDisabled(user.role);
+                                return (
+                                  <button
+                                    type="button"
+                                    disabled={roleLocked}
+                                    onClick={() => {
+                                      if (roleLocked) return;
+                                      onToggleUserStatus(user.id);
+                                      setFeedbackBanner(
+                                        `Status akun ${user.fullName} diubah menjadi ${
+                                          user.status === 'Aktif' ? 'Nonaktif' : 'Aktif'
+                                        }.`
+                                      );
+                                    }}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-[4px] border transition-colors ${
+                                      roleLocked
+                                        ? 'text-[#64748B] bg-[#F8FAFC] border-[#E2E8F0] cursor-not-allowed'
+                                        : user.status === 'Aktif'
+                                          ? 'text-[#DC3545] bg-[#FEF2F2] hover:bg-[#FEE2E2] border-[#FECACA] cursor-pointer'
+                                          : 'text-[#16A36A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border-[#BBF7D0] cursor-pointer'
+                                    }`}
+                                  >
+                                    {roleLocked ? (
+                                      <>
+                                        <Lock className="w-3 h-3" aria-hidden="true" />
+                                        <span>Terkunci</span>
+                                      </>
+                                    ) : user.status === 'Aktif' ? (
+                                      <>
+                                        <Lock className="w-3 h-3" aria-hidden="true" />
+                                        <span>Nonaktifkan</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Unlock className="w-3 h-3" aria-hidden="true" />
+                                        <span>Aktifkan Akun</span>
+                                      </>
+                                    )}
+                                  </button>
+                                );
+                              })()}
                             </div>
                           </td>
                         </tr>
@@ -1152,7 +1189,11 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                                 locked ? 'text-[#DC3545]' : 'text-[#16A36A]'
                               }`}
                             >
-                              {locked ? 'Nonaktif / Terkunci' : 'Aktif'}
+                              {emp.status === 'Resign'
+                                ? 'Nonaktif (Resign)'
+                                : locked
+                                  ? 'Nonaktif / Terkunci'
+                                  : 'Aktif'}
                             </span>
                             <p className="text-[11px] text-[#64748B]">
                               Status SDM: {emp.status}
@@ -1183,7 +1224,14 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                               </a>
                               <button
                                 type="button"
+                                disabled={emp.status === 'Resign'}
+                                title={
+                                  emp.status === 'Resign'
+                                    ? 'Akun karyawan Resign otomatis nonaktif. Ubah status SDM di Data Karyawan jika ingin mengaktifkan.'
+                                    : undefined
+                                }
                                 onClick={() => {
+                                  if (emp.status === 'Resign') return;
                                   onToggleEmployeeAccountStatus(emp.id);
                                   setFeedbackBanner(
                                     locked
@@ -1191,7 +1239,7 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                                       : `Akses login akun karyawan ${emp.fullName} (${emp.employeeCode}) telah dinonaktifkan sementara.`
                                   );
                                 }}
-                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-[4px] border cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-[4px] border transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
                                   locked
                                     ? 'text-[#16A36A] bg-[#F0FDF4] hover:bg-[#DCFCE7] border-[#BBF7D0]'
                                     : 'text-[#DC3545] bg-[#FEF2F2] hover:bg-[#FEE2E2] border-[#FECACA]'
@@ -1200,7 +1248,7 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                                 {locked ? (
                                   <>
                                     <Unlock className="w-3 h-3" aria-hidden="true" />
-                                    <span>Aktifkan Akun</span>
+                                    <span>{emp.status === 'Resign' ? 'Terkunci (Resign)' : 'Aktifkan Akun'}</span>
                                   </>
                                 ) : (
                                   <>
@@ -1290,7 +1338,21 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
         {/* TAB 3: AKUN PELAMAR (PLM-2026-001, DLL. + STATUS KONVERSI)        */}
         {/* ================================================================= */}
         {activeTab === 'applicants' && (
-          <div className="overflow-x-auto">
+          <div>
+            {isPortalRoleTemporarilyDisabled('Pelamar') && (
+              <div
+                role="status"
+                className="px-6 py-3.5 bg-[#FFFBEB] border-b border-[#FDE68A] text-xs text-[#92400E] flex items-center gap-2"
+              >
+                <Lock className="w-4 h-4 text-[#B87D00] shrink-0" aria-hidden="true" />
+                <span>
+                  <strong>Portal &amp; Role Pelamar Dinonaktifkan Sementara (Opsi A):</strong>{' '}
+                  Data historis tetap tersimpan aman, tetapi login akun Pelamar diblokir sementara
+                  agar sistem fokus pada Master Admin, Admin, Payroll, dan Karyawan.
+                </span>
+              </div>
+            )}
+            <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-[#E2E8F0] bg-[#F5F7FA]">
@@ -1409,6 +1471,10 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                               <span className="text-xs font-bold text-[#64748B]">
                                 Nonaktif (Sudah Jadi Karyawan)
                               </span>
+                            ) : isPortalRoleTemporarilyDisabled('Pelamar') ? (
+                              <span className="text-xs font-bold text-[#DC3545]">
+                                Nonaktif (Portal Nonaktif)
+                              </span>
                             ) : app.accountDisabled ? (
                               <span className="text-xs font-bold text-[#DC3545]">Nonaktif</span>
                             ) : (
@@ -1426,6 +1492,15 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                                 className="text-xs font-semibold text-[#1468E8] hover:underline cursor-pointer"
                               >
                                 Buka Akun {convertedNik} →
+                              </button>
+                            ) : isPortalRoleTemporarilyDisabled('Pelamar') ? (
+                              <button
+                                type="button"
+                                disabled
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-[4px] border text-[#64748B] bg-[#F8FAFC] border-[#E2E8F0] cursor-not-allowed"
+                              >
+                                <Lock className="w-3 h-3" aria-hidden="true" />
+                                <span>Terkunci (Portal Nonaktif)</span>
                               </button>
                             ) : (
                               <button
@@ -1506,6 +1581,7 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </section>
@@ -1536,6 +1612,9 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                 <th scope="col" className="py-3 px-4 text-xs font-semibold text-[#102B69]">
                   Rekruter
                 </th>
+                <th scope="col" className="py-3 px-4 text-xs font-semibold text-[#102B69]">
+                  Payroll
+                </th>
                 <th scope="col" className="py-3 px-6 text-xs font-semibold text-[#102B69]">
                   Karyawan
                 </th>
@@ -1548,6 +1627,7 @@ export const UsersRbacPanel: React.FC<UsersRbacPanelProps> = ({
                   <td className="py-3 px-4 text-[#1468E8] font-medium">{row.masterAdmin}</td>
                   <td className="py-3 px-4 text-[#172033]">{row.admin}</td>
                   <td className="py-3 px-4 text-[#172033]">{row.rekruter}</td>
+                  <td className="py-3 px-4 text-[#172033]">{row.payroll}</td>
                   <td className="py-3 px-6 text-[#64748B]">{row.karyawan}</td>
                 </tr>
               ))}

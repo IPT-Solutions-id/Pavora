@@ -32,6 +32,7 @@ export const PRIORITY_ROLE_OPTIONS = [
   { value: 'Master Admin', label: 'Master Admin (Tata Kelola & Multi-Entitas)' },
   { value: 'Admin', label: 'Admin (Operasional HR, Berkas & PKWT)' },
   { value: 'Rekruter', label: 'Rekruter (Akuisisi Talenta & ATS)' },
+  { value: 'Payroll', label: 'Payroll (THP, BPJS, PPh 21, Kompensasi & Slip Gaji)' },
   { value: 'Karyawan', label: 'Karyawan (Layanan Mandiri / ESS)' },
 ] as const;
 
@@ -140,7 +141,7 @@ export interface EmployeeAuthCandidate {
   email: string;
   entityName: string;
   employmentType: 'Internal' | 'Penempatan Klien';
-  status: 'Aktif' | 'Probation' | 'Nonaktif';
+  status: 'Aktif' | 'Probation' | 'Resign' | 'Nonaktif';
   portalPassword?: string;
   originApplicantCode?: string;
   applicantId?: string;
@@ -153,7 +154,7 @@ export interface InternalUserAuthCandidate {
   loginAlias?: string;
   fullName: string;
   email: string;
-  role: 'Master Admin' | 'Admin' | 'Rekruter' | 'Karyawan' | 'Pelamar';
+  role: 'Master Admin' | 'Admin' | 'Rekruter' | 'Payroll' | 'Karyawan' | 'Pelamar';
   assignedScopes: string[];
   status: 'Aktif' | 'Menunggu Aktivasi' | 'Nonaktif';
   portalPassword?: string;
@@ -162,13 +163,22 @@ export interface InternalUserAuthCandidate {
 export interface MasterAdminUser {
   id: string;
   name: string;
-  role: 'Master Admin' | 'Admin' | 'Rekruter' | 'Pelamar' | 'Karyawan';
+  role: 'Master Admin' | 'Admin' | 'Rekruter' | 'Payroll' | 'Pelamar' | 'Karyawan';
   title: string;
   assignedScopes: string[];
   applicantId?: string;
   employeeId?: string;
   employeeCode?: string;
   email?: string;
+}
+
+export const TEMPORARILY_DISABLED_PORTAL_ROLES: ReadonlyArray<'Rekruter' | 'Pelamar'> = [
+  'Rekruter',
+  'Pelamar',
+];
+
+export function isPortalRoleTemporarilyDisabled(role: string): boolean {
+  return TEMPORARILY_DISABLED_PORTAL_ROLES.includes(role as 'Rekruter' | 'Pelamar');
 }
 
 export interface AuthAttemptResult {
@@ -186,7 +196,7 @@ export function authenticatePortalUser(
 ): AuthAttemptResult {
   const normalizedId = identifier.trim().toLowerCase();
 
-  // 1. Check registered internal management users if provided (Master Admin, Admin, Rekruter)
+  // 1. Check registered internal management users if provided (Master Admin, Admin, Rekruter, Payroll)
   const internalAliasMap: Record<string, string> = {
     'swa-fathur': 'ma-001',
     'swa-ulan': 'adm-014',
@@ -194,12 +204,16 @@ export function authenticatePortalUser(
     'adm-bagus': 'adm-021',
     'swa-rama': 'rec-008',
     'rec-dina': 'rec-008',
+    'swa-payroll': 'pay-001',
   };
   const resolvedInternalCode = internalAliasMap[normalizedId] ?? normalizedId;
 
   const matchedInternalUser = registeredUsers.find(
     (u) =>
-      (u.role === 'Master Admin' || u.role === 'Admin' || u.role === 'Rekruter') &&
+      (u.role === 'Master Admin' ||
+        u.role === 'Admin' ||
+        u.role === 'Rekruter' ||
+        u.role === 'Payroll') &&
       (u.employeeCode.toLowerCase() === resolvedInternalCode ||
         (u.loginAlias && u.loginAlias.toLowerCase() === normalizedId) ||
         u.email.toLowerCase() === normalizedId)
@@ -213,6 +227,12 @@ export function authenticatePortalUser(
         error: 'ID/Email atau kata sandi tidak sesuai. Periksa kembali kredensial Anda.',
       };
     }
+    if (isPortalRoleTemporarilyDisabled(matchedInternalUser.role)) {
+      return {
+        ok: false,
+        error: `Role ${matchedInternalUser.role} sedang dinonaktifkan sementara. Sistem saat ini difokuskan untuk Master Admin, Admin, Payroll, dan Karyawan.`,
+      };
+    }
     if (matchedInternalUser.status === 'Nonaktif') {
       return {
         ok: false,
@@ -224,7 +244,9 @@ export function authenticatePortalUser(
         ? 'Master Admin · PT Swapro Nusantara'
         : matchedInternalUser.role === 'Rekruter'
           ? 'Talent Acquisition Lead · PT Swapro Nusantara'
-          : `Admin Cakupan (${matchedInternalUser.assignedScopes.join(' & ') || 'Internal'})`;
+          : matchedInternalUser.role === 'Payroll'
+            ? `Payroll Specialist (${matchedInternalUser.assignedScopes.length || 'All'} Unit/Klien)`
+            : `Admin Cakupan (${matchedInternalUser.assignedScopes.join(' & ') || 'Internal'})`;
     return {
       ok: true,
       user: {
@@ -236,7 +258,9 @@ export function authenticatePortalUser(
         role: matchedInternalUser.role,
         title: roleTitle,
         assignedScopes:
-          matchedInternalUser.role === 'Admin' || matchedInternalUser.role === 'Rekruter'
+          matchedInternalUser.role === 'Admin' ||
+          matchedInternalUser.role === 'Rekruter' ||
+          matchedInternalUser.role === 'Payroll'
             ? matchedInternalUser.assignedScopes
             : [],
         email: matchedInternalUser.email,
@@ -303,6 +327,13 @@ export function authenticatePortalUser(
         normalizedId === 'dina.lestari@swapro-demo.co.id') &&
       password === '1234'
     ) {
+      if (isPortalRoleTemporarilyDisabled('Rekruter')) {
+        return {
+          ok: false,
+          error:
+            'Role Rekruter sedang dinonaktifkan sementara. Sistem saat ini difokuskan untuk Master Admin, Admin, Payroll, dan Karyawan.',
+        };
+      }
       return {
         ok: true,
         user: {
@@ -317,6 +348,29 @@ export function authenticatePortalUser(
             'BAF — Layanan Operasional Cabang',
           ],
           email: 'swa-rama@swapro-demo.co.id',
+        },
+      };
+    }
+    if (
+      (normalizedId === 'swa-payroll' ||
+        normalizedId === 'swa-payroll@swapro-demo.co.id' ||
+        normalizedId === 'pay-001') &&
+      password === '1234'
+    ) {
+      return {
+        ok: true,
+        user: {
+          id: 'PAY-001',
+          name: 'Dewi Anggraini',
+          role: 'Payroll',
+          title: 'Payroll Specialist · PT Swapro Nusantara',
+          assignedScopes: [
+            'Kantor Pusat Operasional',
+            'Adira Finance — Penempatan Regional',
+            'FIFGROUP — Area Jawa Timur',
+            'BAF — Layanan Operasional Cabang',
+          ],
+          email: 'swa-payroll@swapro-demo.co.id',
         },
       };
     }
@@ -384,6 +438,13 @@ export function authenticatePortalUser(
         return {
           ok: false,
           error: 'Akun karyawan berstatus Nonaktif. Hubungi Admin HR atau Master Admin.',
+        };
+      }
+      if (matchedEmployee.status === 'Resign') {
+        return {
+          ok: false,
+          error:
+            'Akun karyawan berstatus Resign sehingga akses portal dinonaktifkan. Hubungi tim Payroll / Admin HR untuk salinan PDF Slip Gaji terakhir.',
         };
       }
       return {
@@ -465,6 +526,13 @@ export function authenticatePortalUser(
         error: `Akun pelamar ${matchedApplicant.applicantCode} telah dialihkan menjadi akun Karyawan (NIK: ${convertedNik}). Silakan masuk menggunakan NIK ${convertedNik}.`,
       };
     }
+    if (isPortalRoleTemporarilyDisabled('Pelamar')) {
+      return {
+        ok: false,
+        error:
+          'Role & Portal Pelamar sedang dinonaktifkan sementara. Sistem saat ini difokuskan untuk Master Admin, Admin, Payroll, dan Karyawan.',
+      };
+    }
     if (matchedApplicant.accountDisabled) {
       return {
         ok: false,
@@ -495,6 +563,13 @@ export function authenticatePortalUser(
       normalizedId === 'sari.wulandari@pelamar-demo.id') &&
     password === '1234'
   ) {
+    if (isPortalRoleTemporarilyDisabled('Pelamar')) {
+      return {
+        ok: false,
+        error:
+          'Role & Portal Pelamar sedang dinonaktifkan sementara. Sistem saat ini difokuskan untuk Master Admin, Admin, Payroll, dan Karyawan.',
+      };
+    }
     return {
       ok: true,
       user: {

@@ -1,3 +1,5 @@
+import { isPortalRoleTemporarilyDisabled } from '../utils/validation';
+
 export type DashboardMenuId =
   | 'overview'
   | 'entities'
@@ -16,7 +18,13 @@ export type AdminMenuId =
   | 'admin-onboarding'
   | 'admin-reports';
 
-export type UserRoleName = 'Master Admin' | 'Admin' | 'Rekruter' | 'Karyawan' | 'Pelamar';
+export type UserRoleName =
+  | 'Master Admin'
+  | 'Admin'
+  | 'Rekruter'
+  | 'Payroll'
+  | 'Karyawan'
+  | 'Pelamar';
 
 export type OrganizationScopeCategory = 'Internal' | 'Klien Penempatan';
 
@@ -39,6 +47,7 @@ export interface SupportedPlacementLocation {
   mapsUrl: string;
   lat?: number;
   lng?: number;
+  regionalWageId?: string;
 }
 
 export interface EntityRecord {
@@ -93,7 +102,7 @@ export interface ApprovalRequestRecord {
   requester: string;
   requesterRole: UserRoleName;
   entityName: string;
-  category: 'Struktur' | 'Rekrutmen' | 'Akses Akun' | 'Kebijakan' | 'Penempatan Klien';
+  category: 'Struktur' | 'Rekrutmen' | 'Akses Akun' | 'Kebijakan' | 'Penempatan Klien' | 'Payroll';
   submittedAt: string;
   status: 'Menunggu' | 'Disetujui' | 'Ditolak';
 }
@@ -143,13 +152,41 @@ export interface AttendanceLogRecord {
   selfieSnapshot?: string;
 }
 
+export type LeaveRequestType =
+  | 'Cuti Tahunan'
+  | 'Izin Sakit'
+  | 'Izin Keperluan'
+  | 'Datang Terlambat'
+  | 'Pulang Lebih Awal'
+  | 'Meninggalkan Pekerjaan';
+
+export interface LeaveReplacementStaff {
+  employeeCode: string;
+  fullName: string;
+  division: string;
+  position: string;
+  unitKerja: string;
+}
+
+export function isPartialDayLeaveType(type: string): boolean {
+  return (
+    type === 'Datang Terlambat' ||
+    type === 'Pulang Lebih Awal' ||
+    type === 'Meninggalkan Pekerjaan'
+  );
+}
+
+export function doesLeaveDeductAnnualQuota(type: string): boolean {
+  return type === 'Cuti Tahunan' || type === 'Izin Keperluan';
+}
+
 export interface LeaveAbsenceRecord {
   id: string;
   employeeCode: string;
   employeeName: string;
   employmentType: EmploymentCategory;
   entityName: string;
-  type: 'Cuti Tahunan' | 'Izin Sakit' | 'Izin Keperluan' | 'Alpha / Tanpa Keterangan';
+  type: LeaveRequestType | 'Alpha / Tanpa Keterangan';
   dateRange: string;
   daysCount: number;
   reason: string;
@@ -166,6 +203,27 @@ export interface LeaveAbsenceRecord {
   submittedAt?: string;
   reviewedBy?: string;
   reviewedAt?: string;
+  // SWAPRO FORM HCREV-17102023 fields
+  division?: string;
+  position?: string;
+  unitKerja?: string;
+  categoryDetail?: string;
+  startDate?: string;
+  endDate?: string;
+  returnToWorkDate?: string;
+  timeDetail?: string;
+  leaveTimeStart?: string;
+  leaveTimeEnd?: string;
+  contactPhone?: string;
+  submittedCity?: string;
+  hcQuotaBefore?: number;
+  hcQuotaTaken?: number;
+  hcQuotaRemaining?: number;
+  replacementStaff?: LeaveReplacementStaff;
+  approverDirectName?: string;
+  approverAreaHeadName?: string;
+  approverHcName?: string;
+  applicantSignatureDataUrl?: string;
 }
 
 export interface ContractRecord {
@@ -363,7 +421,12 @@ export interface WorkspaceNotificationRecord {
     | 'new-application'
     | 'applicant-ready'
     | 'interview-scheduled'
-    | 'application-updated';
+    | 'application-updated'
+    | 'payroll-submitted'
+    | 'payroll-approved'
+    | 'payroll-rejected'
+    | 'payslip-published'
+    | 'activity-report-updated';
   title: string;
   message: string;
   createdAt: string;
@@ -373,8 +436,60 @@ export interface WorkspaceNotificationRecord {
   leaveId?: string;
   applicationId?: string;
   applicantId?: string;
-  recipientRole?: 'admin' | 'master-admin' | 'employee' | 'recruiter' | 'applicant';
+  recipientRole?: 'admin' | 'master-admin' | 'payroll' | 'employee' | 'recruiter' | 'applicant';
   read: boolean;
+}
+
+export type ActivityProgressStatus = 'Berjalan' | 'Selesai' | 'Terkendala';
+
+export interface EmployeeActivityReportRecord {
+  id: string;
+  employeeId: string;
+  employeeCode: string;
+  employeeName: string;
+  position: string;
+  employmentType: EmploymentCategory;
+  entityName: string;
+  targetEntityName: string;
+  targetBranchName: string;
+  activityDate: string;
+  title: string;
+  description: string;
+  progressStatus: ActivityProgressStatus;
+  attachmentFileName?: string;
+  attachmentDataUrl?: string;
+  photoCapturedAt?: string;
+  photoGpsLat?: number;
+  photoGpsLng?: number;
+  photoGpsAccuracyMeters?: number;
+  photoGpsAddress?: string;
+  photoGpsStatus?: 'locked' | 'unavailable' | 'denied';
+  createdAt: string;
+  updatedAt: string;
+  updateCount: number;
+}
+
+export interface EmployeeActivityReportInput {
+  activityDate: string;
+  targetEntityName: string;
+  targetBranchName: string;
+  title: string;
+  description: string;
+  progressStatus: ActivityProgressStatus;
+  attachmentFileName?: string;
+  attachmentDataUrl?: string;
+  photoCapturedAt?: string;
+  photoGpsLat?: number;
+  photoGpsLng?: number;
+  photoGpsAccuracyMeters?: number;
+  photoGpsAddress?: string;
+  photoGpsStatus?: 'locked' | 'unavailable' | 'denied';
+}
+
+export interface EmployeeClientAssignment {
+  entityId?: string;
+  entityName: string;
+  branches: string[];
 }
 
 export interface EmployeeRecord {
@@ -392,7 +507,9 @@ export interface EmployeeRecord {
   contractNumber: string;
   joinDate: string;
   contractEndDate: string;
-  status: 'Aktif' | 'Probation' | 'Nonaktif';
+  status: 'Aktif' | 'Probation' | 'Resign' | 'Nonaktif';
+  resignDate?: string;
+  resignReason?: string;
   nik: string;
   birthPlace: string;
   birthDate: string;
@@ -417,11 +534,16 @@ export interface EmployeeRecord {
   bankBranch: string;
   documents: EmployeeDocumentsRecord;
   salaryMonthly?: number;
+  ptkpStatus?: string;
+  regionalWageId?: string;
+  salaryOverrideManual?: boolean;
   placementLocation?: string;
   placementId?: string;
   placementName?: string;
   placementArea?: string;
   placementMapsUrl?: string;
+  handledClients?: EmployeeClientAssignment[];
+  additionalBranches?: string[];
   originApplicantCode?: string;
   applicantId?: string;
   portalPassword?: string;
@@ -452,7 +574,9 @@ export interface EmployeeFormInput {
   contractNumber: string;
   joinDate: string;
   contractEndDate: string;
-  status: 'Aktif' | 'Probation' | 'Nonaktif';
+  status: 'Aktif' | 'Probation' | 'Resign' | 'Nonaktif';
+  resignDate?: string;
+  resignReason?: string;
   nik: string;
   birthPlace: string;
   birthDate: string;
@@ -482,6 +606,8 @@ export interface EmployeeFormInput {
   placementName?: string;
   placementArea?: string;
   placementMapsUrl?: string;
+  handledClients?: EmployeeClientAssignment[];
+  additionalBranches?: string[];
   originApplicantCode?: string;
   applicantId?: string;
   portalPassword?: string;
@@ -850,8 +976,8 @@ export const INITIAL_USERS: UserAccountRecord[] = [
       'BAF — Layanan Operasional Cabang',
     ],
     role: 'Rekruter',
-    status: 'Aktif',
-    lastActive: '1 jam lalu',
+    status: 'Nonaktif',
+    lastActive: 'Dinonaktifkan sementara',
     portalPassword: '1234',
   },
   {
@@ -891,6 +1017,25 @@ export const INITIAL_USERS: UserAccountRecord[] = [
     role: 'Karyawan',
     status: 'Aktif',
     lastActive: '3 jam lalu',
+  },
+  {
+    id: 'usr-8',
+    employeeCode: 'PAY-001',
+    loginAlias: 'swa-payroll',
+    fullName: 'Dewi Anggraini',
+    email: 'swa-payroll@swapro-demo.co.id',
+    whatsappNumber: '081288990077',
+    employmentType: 'Internal',
+    assignedScopes: [
+      'Kantor Pusat Operasional',
+      'Adira Finance — Penempatan Regional',
+      'FIFGROUP — Area Jawa Timur',
+      'BAF — Layanan Operasional Cabang',
+    ],
+    role: 'Payroll',
+    status: 'Aktif',
+    lastActive: 'Baru saja',
+    portalPassword: '1234',
   },
 ];
 
@@ -1219,6 +1364,27 @@ export const INITIAL_LEAVE_ABSENCES: LeaveAbsenceRecord[] = [
     reason: 'Keperluan acara keluarga di luar kota',
     status: 'Menunggu',
     submittedAt: '12 Nov 2026 · 09:15',
+    division: 'Operasional Klien',
+    position: 'Customer Service Officer',
+    unitKerja: 'BAF — Layanan Operasional Cabang',
+    categoryDetail: 'Cuti Tahunan',
+    startDate: '2026-11-18',
+    endDate: '2026-11-20',
+    returnToWorkDate: '2026-11-23',
+    contactPhone: '0812-8840-2190',
+    submittedCity: 'Jakarta',
+    hcQuotaBefore: 12,
+    hcQuotaTaken: 3,
+    hcQuotaRemaining: 9,
+    replacementStaff: {
+      employeeCode: 'OUT-405',
+      fullName: 'Bima Saputra',
+      division: 'Operasional Klien',
+      position: 'Field Collection Support',
+      unitKerja: 'Adira Finance — Penempatan Regional',
+    },
+    approverDirectName: 'Ulan Sari',
+    approverAreaHeadName: 'Fathurrahman',
   },
   {
     id: 'lv-5',
@@ -1242,6 +1408,19 @@ export const INITIAL_LEAVE_ABSENCES: LeaveAbsenceRecord[] = [
       doctorOrClinicName: 'Klinik Pratama Medika Depok — dr. Hendra Wijaya',
     }),
     submittedAt: '12 Nov 2026 · 08:40',
+    division: 'Operasional Klien',
+    position: 'Field Collection Support',
+    unitKerja: 'Adira Finance — Penempatan Regional',
+    startDate: '2026-11-13',
+    endDate: '2026-11-13',
+    returnToWorkDate: '2026-11-16',
+    contactPhone: '0813-7712-4090',
+    submittedCity: 'Depok',
+    hcQuotaBefore: 12,
+    hcQuotaTaken: 0,
+    hcQuotaRemaining: 12,
+    approverDirectName: 'Ulan Sari',
+    approverAreaHeadName: 'Fathurrahman',
   },
   {
     id: 'lv-3',
@@ -1255,6 +1434,27 @@ export const INITIAL_LEAVE_ABSENCES: LeaveAbsenceRecord[] = [
     reason: 'Pengurusan perpanjangan dokumen kendaraan operasional',
     status: 'Menunggu',
     submittedAt: '11 Nov 2026 · 16:10',
+    division: 'Operasional Internal',
+    position: 'Staff Operasional',
+    unitKerja: 'Kantor Pusat Operasional',
+    categoryDetail: 'Urusan Dokumen',
+    startDate: '2026-11-14',
+    endDate: '2026-11-14',
+    returnToWorkDate: '2026-11-16',
+    contactPhone: '0812-9010-2400',
+    submittedCity: 'Jakarta',
+    hcQuotaBefore: 12,
+    hcQuotaTaken: 1,
+    hcQuotaRemaining: 11,
+    replacementStaff: {
+      employeeCode: 'INT-118',
+      fullName: 'Larasati Dewi',
+      division: 'Rekrutmen & Pelatihan',
+      position: 'Recruitment Officer',
+      unitKerja: 'Pusat Rekrutmen & Pelatihan',
+    },
+    approverDirectName: 'Ulan Sari',
+    approverAreaHeadName: 'Fathurrahman',
   },
   {
     id: 'lv-4',
@@ -1270,6 +1470,21 @@ export const INITIAL_LEAVE_ABSENCES: LeaveAbsenceRecord[] = [
     submittedAt: '08 Nov 2026 · 14:00',
     reviewedBy: 'Fathurrahman (MGR-001)',
     reviewedAt: '09 Nov 2026 · 10:15',
+    division: 'Rekrutmen & Pelatihan',
+    position: 'Recruitment Officer',
+    unitKerja: 'Pusat Rekrutmen & Pelatihan',
+    categoryDetail: 'Cuti Tahunan',
+    startDate: '2026-11-12',
+    endDate: '2026-11-13',
+    returnToWorkDate: '2026-11-16',
+    contactPhone: '0811-2244-8810',
+    submittedCity: 'Jakarta',
+    hcQuotaBefore: 12,
+    hcQuotaTaken: 2,
+    hcQuotaRemaining: 10,
+    approverDirectName: 'Ulan Sari',
+    approverAreaHeadName: 'Fathurrahman',
+    approverHcName: 'Fathurrahman (MGR-001)',
   },
 ];
 
@@ -1460,6 +1675,7 @@ export const RBAC_MATRIX_ROWS = [
     masterAdmin: 'Penuh (Tambah Unit & Klien Opsional)',
     admin: 'Lihat Unit & Klien Sesuai Cakupan',
     rekruter: 'Lihat Kebutuhan Unit & Klien',
+    payroll: 'Lihat Rate Card & Acuan UMR Klien',
     karyawan: 'Lihat Unit / Klien Penempatan Sendiri',
   },
   {
@@ -1467,6 +1683,7 @@ export const RBAC_MATRIX_ROWS = [
     masterAdmin: 'Penuh (Assign Peran & Multi-Klien)',
     admin: 'Kelola SDM di Cakupan Ditugaskan',
     rekruter: 'Tidak Ada Akses',
+    payroll: 'Tidak Ada Akses',
     karyawan: 'Ubah Profil Pribadi',
   },
   {
@@ -1474,13 +1691,23 @@ export const RBAC_MATRIX_ROWS = [
     masterAdmin: 'Kebijakan, ACC Cuti/SKD, Audit Presensi & PKWT',
     admin: 'Rekap Absensi, Pantau Cuti/SKD (ACC Master Admin) & Usulan PKWT',
     rekruter: 'Pengajuan Pribadi',
+    payroll: 'Tarik Rekap Alpha & Masa Kerja PKWT',
     karyawan: 'Presensi Lokasi Penempatan & Cuti',
+  },
+  {
+    module: 'Payroll, BPJS, PPh 21, Kompensasi & Slip Gaji',
+    masterAdmin: 'ACC Final Run Payroll & Master Tarif Global',
+    admin: 'Lihat Rekap Kehadiran & PKWT Klien',
+    rekruter: 'Tidak Ada Akses',
+    payroll: 'Hitung THP, Impor Excel, Kompensasi & Terbit Draf Slip',
+    karyawan: 'Lihat & Unduh Slip Gaji PDF Resmi',
   },
   {
     module: 'Rekrutmen & Pemenuhan Klien (ATS)',
     masterAdmin: 'Otorisasi Kuota Unit / Klien',
     admin: 'Terima Data Onboarding',
     rekruter: 'Penuh Sesuai Cakupan Unit / Klien',
+    payroll: 'Tidak Ada Akses',
     karyawan: 'Lihat Lowongan Internal',
   },
   {
@@ -1488,6 +1715,7 @@ export const RBAC_MATRIX_ROWS = [
     masterAdmin: 'Penuh (Seluruh Internal & Klien)',
     admin: 'Terbatas Cakupan Sendiri',
     rekruter: 'Tidak Ada Akses',
+    payroll: 'Jejak Impor Excel & Lock Periode',
     karyawan: 'Riwayat Login Pribadi',
   },
 ] as const;
@@ -1653,7 +1881,17 @@ export const INITIAL_EMPLOYEES: EmployeeRecord[] = [
     bpjsKesehatanNumber: '0002084192831',
     bpjsKetenagakerjaanNumber: '23018492014',
     salaryMonthly: 7450000,
-    placementLocation: 'Kantor Pusat Operasional — Jakarta Selatan',
+    placementLocation: 'Graha Swatama — Tanjung Barat',
+    placementId: 'plc-int-ho-1',
+    placementName: 'Graha Swatama — Tanjung Barat',
+    placementArea: 'Jakarta Selatan',
+    handledClients: [
+      {
+        entityId: 'ent-3',
+        entityName: 'Adira Finance — Penempatan Regional',
+        branches: ['Adira Tebet', 'Adira Ketapang'],
+      },
+    ],
     ktpAddress: {
       street: 'Jl. Kemang Timur Raya No. 28',
       rtRw: '004/003',
@@ -2287,6 +2525,8 @@ export type EmployeeContractFilterMode =
   | 'PKWT'
   | 'PKWTT'
   | 'Probation'
+  | 'Resign'
+  | 'Nonaktif'
   | 'Segera Habis'
   | 'Baru';
 
@@ -2473,20 +2713,28 @@ export function summarizePortalAccountStats(
   }> = []
 ): PortalAccountStatsSummary {
   const internalUsers = users.filter(
-    (u) => u.role === 'Master Admin' || u.role === 'Admin' || u.role === 'Rekruter'
+    (u) =>
+      u.role === 'Master Admin' ||
+      u.role === 'Admin' ||
+      u.role === 'Payroll' ||
+      u.role === 'Rekruter'
   );
-  const activeInternalCount = internalUsers.filter((u) => u.status === 'Aktif').length;
-  const disabledInternalCount = internalUsers.filter((u) => u.status !== 'Aktif').length;
+  const activeInternalCount = internalUsers.filter(
+    (u) => u.status === 'Aktif' && !isPortalRoleTemporarilyDisabled(u.role)
+  ).length;
+  const disabledInternalCount = internalUsers.filter(
+    (u) => u.status !== 'Aktif' || isPortalRoleTemporarilyDisabled(u.role)
+  ).length;
 
   const activeEmployeeCount = employees.filter(
-    (e) => e.status !== 'Nonaktif' && !e.accountDisabled
+    (e) => e.status !== 'Nonaktif' && e.status !== 'Resign' && !e.accountDisabled
   ).length;
   const disabledEmployeeCount = employees.filter(
-    (e) => e.status === 'Nonaktif' || Boolean(e.accountDisabled)
+    (e) => e.status === 'Nonaktif' || e.status === 'Resign' || Boolean(e.accountDisabled)
   ).length;
 
   const pendingPkwtEmployeeAccounts = employees.filter((e) => {
-    if (e.status === 'Nonaktif' || e.accountDisabled) return false;
+    if (e.status === 'Nonaktif' || e.status === 'Resign' || e.accountDisabled) return false;
     const latest = e.contractHistory?.[e.contractHistory.length - 1];
     if (latest) {
       return latest.signatureStatus === 'Menunggu TTD Karyawan';
@@ -2494,6 +2742,7 @@ export function summarizePortalAccountStats(
     return e.contractType === 'PKWT' && !e.documents.contractUploaded;
   }).length;
 
+  const pelamarGloballyDisabled = isPortalRoleTemporarilyDisabled('Pelamar');
   let activeApplicantCount = 0;
   let disabledApplicantCount = 0;
   for (const app of applicants) {
@@ -2505,7 +2754,7 @@ export function summarizePortalAccountStats(
           (e.originApplicantCode &&
             e.originApplicantCode.toLowerCase() === app.applicantCode.toLowerCase())
       );
-    if (isConverted || app.accountDisabled) {
+    if (isConverted || app.accountDisabled || pelamarGloballyDisabled) {
       disabledApplicantCount += 1;
     } else {
       activeApplicantCount += 1;
@@ -2632,6 +2881,207 @@ export function buildEmployeeMailtoUrl(
   return `mailto:${emp.email.trim()}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
+export function isEmployeeActiveForHeadcount(status: EmployeeRecord['status']): boolean {
+  return status === 'Aktif' || status === 'Probation';
+}
+
+export interface EmployeeStatusCounts {
+  totalTerdata: number;
+  activeCount: number;
+  probationCount: number;
+  activeWorkingCount: number;
+  resignCount: number;
+  nonaktifCount: number;
+  inactiveOrResignedCount: number;
+}
+
+export function summarizeEmployeeStatusCounts(
+  employees: Array<Pick<EmployeeRecord, 'status'>>
+): EmployeeStatusCounts {
+  let activeCount = 0;
+  let probationCount = 0;
+  let resignCount = 0;
+  let nonaktifCount = 0;
+
+  for (const emp of employees) {
+    if (emp.status === 'Aktif') activeCount += 1;
+    else if (emp.status === 'Probation') probationCount += 1;
+    else if (emp.status === 'Resign') resignCount += 1;
+    else if (emp.status === 'Nonaktif') nonaktifCount += 1;
+  }
+
+  return {
+    totalTerdata: employees.length,
+    activeCount,
+    probationCount,
+    activeWorkingCount: activeCount + probationCount,
+    resignCount,
+    nonaktifCount,
+    inactiveOrResignedCount: resignCount + nonaktifCount,
+  };
+}
+
+export function applyEmployeeHeadcountDelta(
+  entities: EntityRecord[],
+  prevEmp?: Pick<EmployeeRecord, 'entityName' | 'status'> | null,
+  nextEmp?: Pick<EmployeeRecord, 'entityName' | 'status'> | null
+): EntityRecord[] {
+  const prevActive = prevEmp ? isEmployeeActiveForHeadcount(prevEmp.status) : false;
+  const nextActive = nextEmp ? isEmployeeActiveForHeadcount(nextEmp.status) : false;
+  const prevEntityKey = prevEmp?.entityName.trim().toLowerCase() ?? '';
+  const nextEntityKey = nextEmp?.entityName.trim().toLowerCase() ?? '';
+
+  if (!prevActive && !nextActive) return entities;
+  if (prevActive && nextActive && prevEntityKey === nextEntityKey) return entities;
+
+  return entities.map((ent) => {
+    const entKey = ent.name.trim().toLowerCase();
+    let delta = 0;
+    if (prevActive && entKey === prevEntityKey) delta -= 1;
+    if (nextActive && entKey === nextEntityKey) delta += 1;
+    if (delta === 0) return ent;
+    return {
+      ...ent,
+      employeeCount: Math.max(0, ent.employeeCount + delta),
+    };
+  });
+}
+
+export function normalizeEmployeePlacementInput(
+  input: EmployeeFormInput,
+  entities: EntityRecord[]
+): EmployeeFormInput {
+  const matchedEntity = entities.find(
+    (e) => e.name.trim().toLowerCase() === input.entityName.trim().toLowerCase()
+  );
+  const resolvedEmploymentType: EmploymentCategory = matchedEntity
+    ? matchedEntity.category === 'Klien Penempatan'
+      ? 'Penempatan Klien'
+      : 'Internal'
+    : input.employmentType;
+
+  const matchedLoc = matchedEntity?.supportedPlacements?.find(
+    (loc) =>
+      (input.placementId && loc.id === input.placementId) ||
+      (input.placementName && loc.name.toLowerCase() === input.placementName.trim().toLowerCase())
+  );
+
+  const placementName = (
+    matchedLoc?.name ??
+    input.placementName ??
+    input.placementLocation ??
+    ''
+  ).trim();
+  const placementArea = (matchedLoc?.area ?? input.placementArea ?? '').trim();
+  const placementMapsUrl = (matchedLoc?.mapsUrl ?? input.placementMapsUrl ?? '').trim();
+
+  if (resolvedEmploymentType === 'Internal') {
+    const rawClients = input.handledClients ?? [];
+    const dedupMap = new Map<string, EmployeeClientAssignment>();
+    for (const item of rawClients) {
+      const cleanName = item.entityName.trim();
+      if (!cleanName) continue;
+      const clientEnt = entities.find(
+        (e) => e.name.trim().toLowerCase() === cleanName.toLowerCase()
+      );
+      const uniqueBranches: string[] = [];
+      const seenBranches = new Set<string>();
+      for (const b of item.branches ?? []) {
+        const cleanBranch = b.trim();
+        if (!cleanBranch) continue;
+        const key = cleanBranch.toLowerCase();
+        if (!seenBranches.has(key)) {
+          seenBranches.add(key);
+          uniqueBranches.push(cleanBranch);
+        }
+      }
+      const key = cleanName.toLowerCase();
+      const existing = dedupMap.get(key);
+      if (existing) {
+        for (const b of uniqueBranches) {
+          if (!existing.branches.some((eb) => eb.toLowerCase() === b.toLowerCase())) {
+            existing.branches.push(b);
+          }
+        }
+      } else {
+        dedupMap.set(key, {
+          entityId: item.entityId ?? clientEnt?.id,
+          entityName: clientEnt?.name ?? cleanName,
+          branches: uniqueBranches.length > 0 ? uniqueBranches : ['Semua Cabang'],
+        });
+      }
+    }
+
+    return {
+      ...input,
+      employmentType: 'Internal',
+      entityName: matchedEntity?.name ?? input.entityName.trim(),
+      placementId: matchedLoc?.id ?? input.placementId ?? '',
+      placementName,
+      placementArea,
+      placementMapsUrl,
+      placementLocation: placementName || input.placementLocation || '',
+      handledClients: Array.from(dedupMap.values()),
+      additionalBranches: [],
+    };
+  }
+
+  const primaryLower = placementName.toLowerCase();
+  const seenExtra = new Set<string>();
+  const cleanAdditionalBranches: string[] = [];
+  for (const b of input.additionalBranches ?? []) {
+    const clean = b.trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (key === primaryLower || seenExtra.has(key)) continue;
+    seenExtra.add(key);
+    cleanAdditionalBranches.push(clean);
+  }
+
+  return {
+    ...input,
+    employmentType: 'Penempatan Klien',
+    entityName: matchedEntity?.name ?? input.entityName.trim(),
+    placementId: matchedLoc?.id ?? input.placementId ?? '',
+    placementName,
+    placementArea,
+    placementMapsUrl,
+    placementLocation: placementName || input.placementLocation || '',
+    handledClients: [],
+    additionalBranches: cleanAdditionalBranches,
+  };
+}
+
+export function formatEmployeeHandledClientsSummary(
+  emp: Pick<
+    EmployeeRecord,
+    | 'employmentType'
+    | 'entityName'
+    | 'placementName'
+    | 'placementLocation'
+    | 'handledClients'
+    | 'additionalBranches'
+  >
+): string[] {
+  if (emp.employmentType === 'Internal') {
+    const items = emp.handledClients ?? [];
+    return items
+      .filter((c) => c.entityName.trim().length > 0)
+      .map((c) => {
+        const branches = c.branches.length > 0 ? c.branches.join(', ') : 'Semua Cabang';
+        return `${c.entityName}: ${branches}`;
+      });
+  }
+
+  const primaryBranch = (emp.placementName || emp.placementLocation || '').trim();
+  const extras = (emp.additionalBranches ?? []).filter(
+    (b) => b.trim().length > 0 && b.trim().toLowerCase() !== primaryBranch.toLowerCase()
+  );
+  const allBranches = [primaryBranch, ...extras].filter(Boolean);
+  if (allBranches.length === 0) return [emp.entityName];
+  return [`${emp.entityName} (${allBranches.join(', ')})`];
+}
+
 export function filterEmployees(
   employees: EmployeeRecord[],
   query: string,
@@ -2648,11 +3098,23 @@ export function filterEmployees(
       contractFilter === 'Semua' ||
       (contractFilter === 'Probation'
         ? emp.status === 'Probation'
-        : contractFilter === 'Segera Habis'
-          ? eoc.isExpiring
-          : contractFilter === 'Baru'
-            ? Boolean(emp.isNewHire)
-            : emp.contractType === contractFilter);
+        : contractFilter === 'Resign'
+          ? emp.status === 'Resign'
+          : contractFilter === 'Nonaktif'
+            ? emp.status === 'Nonaktif'
+            : contractFilter === 'Segera Habis'
+              ? eoc.isExpiring
+              : contractFilter === 'Baru'
+                ? Boolean(emp.isNewHire)
+                : emp.contractType === contractFilter);
+    const matchesHandledClient = (emp.handledClients ?? []).some(
+      (hc) =>
+        hc.entityName.toLowerCase().includes(q) ||
+        hc.branches.some((b) => b.toLowerCase().includes(q))
+    );
+    const matchesAdditionalBranch = (emp.additionalBranches ?? []).some((b) =>
+      b.toLowerCase().includes(q)
+    );
     const matchesQuery =
       !q ||
       emp.fullName.toLowerCase().includes(q) ||
@@ -2664,7 +3126,9 @@ export function filterEmployees(
       emp.entityName.toLowerCase().includes(q) ||
       (emp.placementName ?? '').toLowerCase().includes(q) ||
       (emp.placementArea ?? '').toLowerCase().includes(q) ||
-      emp.position.toLowerCase().includes(q);
+      emp.position.toLowerCase().includes(q) ||
+      matchesHandledClient ||
+      matchesAdditionalBranch;
     return matchesEmp && matchesEntity && matchesContract && matchesQuery;
   });
 }
@@ -2695,6 +3159,14 @@ export function validateEmployeeInput(input: EmployeeFormInput): {
       errors.contractEndDate = 'End of contract wajib diisi untuk karyawan PKWT.';
     } else if (input.joinDate && input.contractEndDate < input.joinDate) {
       errors.contractEndDate = 'End of contract tidak boleh lebih awal dari tanggal join.';
+    }
+  }
+
+  if (input.status === 'Resign') {
+    if (!input.resignDate?.trim()) {
+      errors.resignDate = 'Tanggal efektif resign wajib diisi untuk karyawan berstatus Resign.';
+    } else if (input.joinDate && input.resignDate < input.joinDate) {
+      errors.resignDate = 'Tanggal resign tidak boleh lebih awal dari tanggal join.';
     }
   }
 
@@ -3011,18 +3483,22 @@ export function calculateEmployeeLeaveQuotaSummary(
 }
 
 export function validateLeaveRequestSubmission(input: {
-  type: 'Cuti Tahunan' | 'Izin Sakit' | 'Izin Keperluan';
+  type: LeaveRequestType;
   dateRange: string;
   daysCount: number;
   reason: string;
   skdFileName?: string;
   skdFileDataUrl?: string;
+  timeDetail?: string;
+  leaveTimeStart?: string;
+  leaveTimeEnd?: string;
   remainingLeaveQuota: number;
 }): { ok: boolean; error?: string } {
   if (!input.dateRange.trim()) {
     return { ok: false, error: 'Rentang tanggal cuti / izin wajib diisi.' };
   }
-  if (!Number.isFinite(input.daysCount) || input.daysCount < 1) {
+  const partialDay = isPartialDayLeaveType(input.type);
+  if (!partialDay && (!Number.isFinite(input.daysCount) || input.daysCount < 1)) {
     return { ok: false, error: 'Jumlah hari pengajuan minimal 1 hari kerja.' };
   }
   if (!input.reason.trim()) {
@@ -3036,7 +3512,25 @@ export function validateLeaveRequestSubmission(input: {
           'Wajib mengunggah lampiran SKD (Surat Keterangan Dokter) untuk pengajuan Izin Sakit.',
       };
     }
-  } else {
+  } else if (input.type === 'Datang Terlambat' || input.type === 'Pulang Lebih Awal') {
+    if (!input.timeDetail?.trim()) {
+      return {
+        ok: false,
+        error:
+          input.type === 'Datang Terlambat'
+            ? 'Jam perkiraan kedatangan wajib diisi untuk izin Datang Terlambat.'
+            : 'Jam pulang lebih awal wajib diisi untuk izin Pulang Lebih Awal.',
+      };
+    }
+  } else if (input.type === 'Meninggalkan Pekerjaan') {
+    if (!input.leaveTimeStart?.trim() || !input.leaveTimeEnd?.trim()) {
+      return {
+        ok: false,
+        error:
+          'Jam mulai dan jam selesai (s/d) wajib diisi untuk izin Meninggalkan Pekerjaan.',
+      };
+    }
+  } else if (doesLeaveDeductAnnualQuota(input.type)) {
     if (input.daysCount > input.remainingLeaveQuota) {
       return {
         ok: false,
@@ -3183,7 +3677,7 @@ export function buildPerEmployeeAttendanceRecap(params: {
   >();
 
   for (const emp of employees) {
-    if (emp.status === 'Nonaktif') continue;
+    if (emp.status === 'Nonaktif' || emp.status === 'Resign') continue;
     subjectMap.set(emp.employeeCode.trim().toUpperCase(), {
       employeeId: emp.id,
       employeeCode: emp.employeeCode.trim(),
@@ -3702,3 +4196,317 @@ export function buildLiveOperationalSnapshots(input: {
     };
   });
 }
+
+export const INITIAL_ACTIVITY_REPORTS: EmployeeActivityReportRecord[] = [
+  {
+    id: 'act-1',
+    employeeId: 'emp-1',
+    employeeCode: 'EMP-1024',
+    employeeName: 'Raka Pratama',
+    position: 'Staff Operasional & Tata Kelola',
+    employmentType: 'Internal',
+    entityName: 'Kantor Pusat Operasional',
+    targetEntityName: 'Adira Finance — Penempatan Regional',
+    targetBranchName: 'Adira Tebet',
+    activityDate: '2026-11-17',
+    title: 'Sinkronisasi data presensi & jadwal shift penempatan Adira Tebet',
+    description:
+      'Melakukan pengecekan kesesuaian roster shift staf lapangan dan koordinasi administrasi dokumen PKWT perpanjangan bulan November.',
+    progressStatus: 'Selesai',
+    createdAt: '17 Nov 2026 · 09:40',
+    updatedAt: '17 Nov 2026 · 11:15',
+    updateCount: 1,
+  },
+  {
+    id: 'act-2',
+    employeeId: 'emp-6',
+    employeeCode: 'NEW-209',
+    employeeName: 'Rudi Hartono',
+    position: 'Staf Verifikasi Dokumen Klien',
+    employmentType: 'Penempatan Klien',
+    entityName: 'Adira Finance — Penempatan Regional',
+    targetEntityName: 'Adira Finance — Penempatan Regional',
+    targetBranchName: 'Adira Tebet',
+    activityDate: '2026-11-17',
+    title: 'Verifikasi kelengkapan berkas pengajuan kredit harian batch pagi',
+    description:
+      'Memeriksa 28 berkas pemohon pembiayaan kendaraan bermotor, melakukan validasi KTP/KK serta kelengkapan tanda tangan formulir aplikasi.',
+    progressStatus: 'Berjalan',
+    createdAt: '17 Nov 2026 · 10:20',
+    updatedAt: '17 Nov 2026 · 10:20',
+    updateCount: 0,
+  },
+  {
+    id: 'act-3',
+    employeeId: 'emp-2',
+    employeeCode: 'OUT-318',
+    employeeName: 'Nadia Kusuma',
+    position: 'Customer Service Cabang',
+    employmentType: 'Penempatan Klien',
+    entityName: 'BAF — Layanan Operasional Cabang',
+    targetEntityName: 'BAF — Layanan Operasional Cabang',
+    targetBranchName: 'BAF Cabang Sudirman',
+    activityDate: '2026-11-16',
+    title: 'Pelayanan meja informasi & penanganan antrean pelunasan nasabah',
+    description:
+      'Menangani 42 nasabah walk-in terkait informasi angsuran, permintaan salinan kontrak, dan penyampaian berkas BPKB ke tim arsip.',
+    progressStatus: 'Selesai',
+    createdAt: '16 Nov 2026 · 16:45',
+    updatedAt: '16 Nov 2026 · 16:45',
+    updateCount: 0,
+  },
+  {
+    id: 'act-4',
+    employeeId: 'emp-4',
+    employeeCode: 'INT-118',
+    employeeName: 'Larasati Dewi',
+    position: 'Talent & Training Specialist',
+    employmentType: 'Internal',
+    entityName: 'Pusat Rekrutmen & Pelatihan',
+    targetEntityName: 'Pusat Rekrutmen & Pelatihan',
+    targetBranchName: 'Pusat Rekrutmen & Pelatihan — Bandung',
+    activityDate: '2026-11-16',
+    title: 'Pelaksanaan sesi orientasi & pembekalan SOP kandidat area Bandung',
+    description:
+      'Memberikan materi standar layanan frontliner dan tata tertib presensi biometrik untuk 12 kandidat gelombang kedua bulan November.',
+    progressStatus: 'Selesai',
+    createdAt: '16 Nov 2026 · 15:30',
+    updatedAt: '16 Nov 2026 · 15:30',
+    updateCount: 0,
+  },
+];
+
+export function resolveEmployeeActivityScopeOptions(
+  employee: Pick<
+    EmployeeRecord,
+    'employmentType' | 'entityName' | 'placementName' | 'placementLocation' | 'handledClients' | 'additionalBranches'
+  >
+): Array<{ entityName: string; branches: string[] }> {
+  const primaryBranch = (employee.placementName || employee.placementLocation || '').trim();
+  if (employee.employmentType === 'Internal') {
+    const options: Array<{ entityName: string; branches: string[] }> = [
+      {
+        entityName: employee.entityName,
+        branches: [primaryBranch || 'Kantor Internal'],
+      },
+    ];
+    for (const hc of employee.handledClients ?? []) {
+      const cleanEntity = hc.entityName.trim();
+      if (!cleanEntity) continue;
+      const branches = hc.branches.length > 0 ? hc.branches : ['Semua Cabang'];
+      const existing = options.find(
+        (opt) => opt.entityName.toLowerCase() === cleanEntity.toLowerCase()
+      );
+      if (existing) {
+        for (const br of branches) {
+          if (!existing.branches.some((eb) => eb.toLowerCase() === br.toLowerCase())) {
+            existing.branches.push(br);
+          }
+        }
+      } else {
+        options.push({
+          entityName: cleanEntity,
+          branches: [...branches],
+        });
+      }
+    }
+    return options;
+  }
+
+  const branchSet = new Set<string>();
+  const branches: string[] = [];
+  for (const br of [primaryBranch || 'Cabang Penempatan', ...(employee.additionalBranches ?? [])]) {
+    const clean = br.trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (!branchSet.has(key)) {
+      branchSet.add(key);
+      branches.push(clean);
+    }
+  }
+  return [
+    {
+      entityName: employee.entityName,
+      branches,
+    },
+  ];
+}
+
+export function validateActivityReportInput(
+  input: EmployeeActivityReportInput,
+  options?: { requireCameraPhoto?: boolean }
+): {
+  isValid: boolean;
+  errors: Record<string, string>;
+} {
+  const errors: Record<string, string> = {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.activityDate.trim())) {
+    errors.activityDate = 'Tanggal kegiatan wajib diisi dengan format yang valid.';
+  }
+  if (!input.targetEntityName.trim()) {
+    errors.targetEntityName = 'Pilih unit internal atau client terkait kegiatan.';
+  }
+  if (!input.targetBranchName.trim()) {
+    errors.targetBranchName = 'Cabang atau lokasi kegiatan wajib diisi.';
+  }
+  if (input.title.trim().length < 3) {
+    errors.title = 'Judul kegiatan minimal 3 karakter.';
+  }
+  if (input.description.trim().length < 5) {
+    errors.description = 'Deskripsi/rincian kegiatan minimal 5 karakter.';
+  }
+  if (
+    input.progressStatus !== 'Berjalan' &&
+    input.progressStatus !== 'Selesai' &&
+    input.progressStatus !== 'Terkendala'
+  ) {
+    errors.progressStatus = 'Status progres kegiatan tidak valid.';
+  }
+  if (options?.requireCameraPhoto && !input.attachmentDataUrl?.trim()) {
+    errors.cameraPhoto =
+      'Foto bukti dari Live Timestamp Kamera wajib diambil sebelum mengirim laporan.';
+  }
+  return {
+    isValid: Object.keys(errors).length === 0,
+    errors,
+  };
+}
+
+export function filterActivityReportsByScopes(
+  reports: EmployeeActivityReportRecord[],
+  assignedScopes: string[],
+  selectedScope = 'Semua Cakupan'
+): EmployeeActivityReportRecord[] {
+  if (assignedScopes.length === 0) return [];
+  const normalizedScopes = new Set(assignedScopes.map((s) => s.trim().toLowerCase()));
+  return reports.filter((r) => {
+    const primaryMatch = normalizedScopes.has(r.entityName.trim().toLowerCase());
+    const targetMatch = normalizedScopes.has(r.targetEntityName.trim().toLowerCase());
+    if (!primaryMatch && !targetMatch) return false;
+    if (selectedScope === 'Semua Cakupan') return true;
+    const sel = selectedScope.trim().toLowerCase();
+    return (
+      r.entityName.trim().toLowerCase() === sel ||
+      r.targetEntityName.trim().toLowerCase() === sel
+    );
+  });
+}
+
+export function filterActivityReports(
+  reports: EmployeeActivityReportRecord[],
+  query = '',
+  employmentFilter: EmploymentCategory | 'Semua' = 'Semua',
+  progressFilter: ActivityProgressStatus | 'Semua' = 'Semua',
+  entityFilter = 'Semua'
+): EmployeeActivityReportRecord[] {
+  const q = query.trim().toLowerCase();
+  return reports.filter((r) => {
+    if (employmentFilter !== 'Semua' && r.employmentType !== employmentFilter) return false;
+    if (progressFilter !== 'Semua' && r.progressStatus !== progressFilter) return false;
+    if (
+      entityFilter !== 'Semua' &&
+      r.entityName !== entityFilter &&
+      r.targetEntityName !== entityFilter
+    ) {
+      return false;
+    }
+    if (!q) return true;
+    return (
+      r.employeeName.toLowerCase().includes(q) ||
+      r.employeeCode.toLowerCase().includes(q) ||
+      r.position.toLowerCase().includes(q) ||
+      r.entityName.toLowerCase().includes(q) ||
+      r.targetEntityName.toLowerCase().includes(q) ||
+      r.targetBranchName.toLowerCase().includes(q) ||
+      r.title.toLowerCase().includes(q) ||
+      r.description.toLowerCase().includes(q)
+    );
+  });
+}
+
+export function summarizeActivityReports(reports: EmployeeActivityReportRecord[]): {
+  total: number;
+  ongoing: number;
+  completed: number;
+  blocked: number;
+  internalCount: number;
+  clientCount: number;
+} {
+  let ongoing = 0;
+  let completed = 0;
+  let blocked = 0;
+  let internalCount = 0;
+  let clientCount = 0;
+
+  for (const r of reports) {
+    if (r.progressStatus === 'Berjalan') ongoing += 1;
+    else if (r.progressStatus === 'Selesai') completed += 1;
+    else if (r.progressStatus === 'Terkendala') blocked += 1;
+
+    if (r.employmentType === 'Internal') internalCount += 1;
+    else clientCount += 1;
+  }
+
+  return {
+    total: reports.length,
+    ongoing,
+    completed,
+    blocked,
+    internalCount,
+    clientCount,
+  };
+}
+
+function escapeCsvField(value: string): string {
+  const safe = value.replace(/"/g, '""').replace(/\r?\n/g, ' ');
+  return `"${safe}"`;
+}
+
+export function buildActivityReportsCsv(reports: EmployeeActivityReportRecord[]): string {
+  const headers = [
+    'Tanggal',
+    'NIK',
+    'Nama Karyawan',
+    'Jalur Penempatan',
+    'Jabatan',
+    'Unit/Client Utama',
+    'Sasaran Unit/Client',
+    'Cabang/Lokasi',
+    'Judul Kegiatan',
+    'Deskripsi Kegiatan',
+    'Progres',
+    'Lampiran',
+    'Waktu Foto Kamera',
+    'Koordinat GPS',
+    'Alamat GPS',
+    'Terakhir Diperbarui',
+  ];
+  const rows = reports.map((r) => {
+    const gpsCell =
+      typeof r.photoGpsLat === 'number' && typeof r.photoGpsLng === 'number'
+        ? `${r.photoGpsLat.toFixed(6)}, ${r.photoGpsLng.toFixed(6)}`
+        : r.photoGpsStatus === 'denied'
+          ? 'Izin GPS ditolak'
+          : '-';
+    return [
+      r.activityDate,
+      r.employeeCode,
+      r.employeeName,
+      r.employmentType === 'Internal' ? 'Internal' : 'Eksternal (Client)',
+      r.position,
+      r.entityName,
+      r.targetEntityName,
+      r.targetBranchName,
+      r.title,
+      r.description,
+      r.progressStatus,
+      r.attachmentFileName ?? '-',
+      r.photoCapturedAt ?? '-',
+      gpsCell,
+      r.photoGpsAddress ?? '-',
+      r.updatedAt,
+    ];
+  });
+  return [headers, ...rows].map((row) => row.map((cell) => escapeCsvField(cell)).join(',')).join('\n');
+}
+

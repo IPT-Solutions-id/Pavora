@@ -279,7 +279,9 @@ export function resolveCurrentWorkforceBaseline(
     };
   }
 
-  const activeEmployees = employees.filter((e) => e.status !== 'Nonaktif');
+  const activeEmployees = employees.filter(
+    (e) => e.status !== 'Nonaktif' && e.status !== 'Resign'
+  );
   const internalCount = activeEmployees.filter((e) => e.employmentType === 'Internal').length;
   const clientCount = activeEmployees.filter((e) => e.employmentType === 'Penempatan Klien').length;
   return {
@@ -936,7 +938,12 @@ export function buildPlacementBreakdownAtPoint(params: {
     });
 
     employees
-      .filter((emp) => emp.status !== 'Nonaktif' && emp.employmentType === 'Internal')
+      .filter(
+        (emp) =>
+          emp.status !== 'Nonaktif' &&
+          emp.status !== 'Resign' &&
+          emp.employmentType === 'Internal'
+      )
       .forEach((emp) => {
         const exists = internalTemplates.some(
           (t) => t.title.toLowerCase() === emp.position.toLowerCase()
@@ -993,6 +1000,7 @@ export function buildPlacementBreakdownAtPoint(params: {
       .filter(
         (emp) =>
           emp.status !== 'Nonaktif' &&
+          emp.status !== 'Resign' &&
           emp.entityName.toLowerCase() === client.name.toLowerCase()
       )
       .forEach((emp) => {

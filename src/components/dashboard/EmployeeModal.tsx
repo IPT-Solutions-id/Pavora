@@ -18,6 +18,7 @@ import {
   ContractHistoryItem,
   DOCUMENT_CHECKLIST_ITEMS,
   DepartmentRecord,
+  EmployeeClientAssignment,
   EmployeeFormInput,
   EmployeeRecord,
   EntityRecord,
@@ -25,6 +26,7 @@ import {
   buildEmployeeMailtoUrl,
   buildEmployeeWhatsappUrl,
   countUploadedDocuments,
+  formatEmployeeHandledClientsSummary,
   formatIndonesianDate,
   getContractEocIndicator,
   validateEmployeeInput,
@@ -40,6 +42,7 @@ interface EmployeeModalProps {
   mode: 'view' | 'create' | 'edit';
   employee: EmployeeRecord | null;
   entities: EntityRecord[];
+  allEntities?: EntityRecord[];
   departments: DepartmentRecord[];
   prefill?: Partial<EmployeeFormInput>;
   onClose: () => void;
@@ -72,6 +75,8 @@ function buildEmptyForm(entities: EntityRecord[]): EmployeeFormInput {
     joinDate: '2026-11-12',
     contractEndDate: '2027-11-11',
     status: 'Aktif',
+    resignDate: '',
+    resignReason: '',
     nik: '',
     birthPlace: '',
     birthDate: '1998-01-01',
@@ -119,6 +124,8 @@ function buildEmptyForm(entities: EntityRecord[]): EmployeeFormInput {
       bankBookUploaded: true,
       contractUploaded: true,
     },
+    handledClients: [],
+    additionalBranches: [],
   };
 }
 
@@ -129,6 +136,11 @@ function fromEmployee(emp: EmployeeRecord): EmployeeFormInput {
     familyMembers: emp.familyMembers.map((m) => ({ ...m })),
     emergencyContact: { ...emp.emergencyContact },
     documents: { ...emp.documents },
+    handledClients: (emp.handledClients ?? []).map((c) => ({
+      ...c,
+      branches: [...c.branches],
+    })),
+    additionalBranches: [...(emp.additionalBranches ?? [])],
   };
 }
 
@@ -136,6 +148,7 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
   mode,
   employee,
   entities,
+  allEntities,
   departments,
   prefill,
   onClose,
@@ -171,6 +184,11 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
     };
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [customPositionInput, setCustomPositionInput] = useState(false);
+  const [customPlacementInput, setCustomPlacementInput] = useState(false);
+  const [customHandledBranchByEntity, setCustomHandledBranchByEntity] = useState<
+    Record<string, string>
+  >({});
 
   // Section 06 contract history / manual upload form state (View mode)
   const [showAddHistoryForm, setShowAddHistoryForm] = useState(false);
@@ -193,20 +211,70 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
 
   const activeEntities = entities.filter((e) => e.status === 'Aktif');
   const entityOptions = activeEntities.length > 0 ? activeEntities : entities;
+  const internalEntityOptions = entityOptions.filter((e) => e.category === 'Internal');
+  const clientEntityOptions = entityOptions.filter((e) => e.category === 'Klien Penempatan');
+  const categoryFilteredEntities =
+    form.employmentType === 'Internal'
+      ? internalEntityOptions.length > 0
+        ? internalEntityOptions
+        : entityOptions
+      : clientEntityOptions.length > 0
+        ? clientEntityOptions
+        : entityOptions;
 
-  const selectedEntityRecord = entities.find((e) => e.name === form.entityName);
+  const clientReferencePool = (allEntities ?? entities).filter(
+    (e) => e.status === 'Aktif' && e.category === 'Klien Penempatan'
+  );
+  const handleableClientOptions =
+    clientReferencePool.length > 0 ? clientReferencePool : clientEntityOptions;
+
+  const selectedEntityRecord =
+    entities.find((e) => e.name === form.entityName) ??
+    allEntities?.find((e) => e.name === form.entityName);
   const entitySupportedPositions = selectedEntityRecord?.supportedPositions ?? [];
   const entitySupportedPlacements = selectedEntityRecord?.supportedPlacements ?? [];
 
+  const handleEmploymentCategorySwitch = (nextCategory: 'Internal' | 'Penempatan Klien') => {
+    const pool = nextCategory === 'Internal' ? internalEntityOptions : clientEntityOptions;
+    if (pool.length === 0) return;
+    const currentStillValid = pool.some((e) => e.name === form.entityName);
+    const targetEnt = currentStillValid
+      ? pool.find((e) => e.name === form.entityName) ?? pool[0]
+      : pool[0];
+    const firstPos = targetEnt.supportedPositions?.[0];
+    const firstLoc = targetEnt.supportedPlacements?.[0];
+    setCustomPositionInput(false);
+    setCustomPlacementInput(false);
+    setForm((prev) => ({
+      ...prev,
+      employmentType: nextCategory,
+      entityName: targetEnt.name,
+      position: firstPos?.title || '',
+      department: firstPos?.department || '',
+      salaryMonthly: firstPos?.baseSalary ?? targetEnt.defaultBaseSalary,
+      placementId: firstLoc?.id ?? '',
+      placementName: firstLoc?.name ?? '',
+      placementArea: firstLoc?.area ?? '',
+      placementMapsUrl: firstLoc?.mapsUrl ?? '',
+      placementLocation: firstLoc?.name || targetEnt.placementAddress || targetEnt.city || '',
+      handledClients: nextCategory === 'Internal' ? prev.handledClients ?? [] : [],
+      additionalBranches: nextCategory === 'Penempatan Klien' ? prev.additionalBranches ?? [] : [],
+    }));
+  };
+
   const handleEntityChange = (nextEntityName: string) => {
-    const matched = entities.find((e) => e.name === nextEntityName);
+    const matched =
+      entities.find((e) => e.name === nextEntityName) ??
+      allEntities?.find((e) => e.name === nextEntityName);
     const firstPos = matched?.supportedPositions?.[0];
     const firstLoc = matched?.supportedPlacements?.[0];
+    const nextType = matched?.category === 'Klien Penempatan' ? 'Penempatan Klien' : 'Internal';
+    setCustomPositionInput(false);
+    setCustomPlacementInput(false);
     setForm((prev) => ({
       ...prev,
       entityName: nextEntityName,
-      employmentType:
-        matched?.category === 'Klien Penempatan' ? 'Penempatan Klien' : 'Internal',
+      employmentType: nextType,
       position: firstPos?.title || '',
       department: firstPos?.department || '',
       salaryMonthly: firstPos?.baseSalary ?? matched?.defaultBaseSalary,
@@ -216,7 +284,101 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
       placementMapsUrl: firstLoc?.mapsUrl ?? '',
       placementLocation:
         firstLoc?.name || matched?.placementAddress || matched?.city || '',
+      handledClients: nextType === 'Internal' ? prev.handledClients ?? [] : [],
+      additionalBranches: [],
     }));
+  };
+
+  const toggleHandledClient = (clientEnt: EntityRecord) => {
+    const current = form.handledClients ?? [];
+    const exists = current.some(
+      (c) => c.entityName.toLowerCase() === clientEnt.name.toLowerCase()
+    );
+    if (exists) {
+      setForm((prev) => ({
+        ...prev,
+        handledClients: (prev.handledClients ?? []).filter(
+          (c) => c.entityName.toLowerCase() !== clientEnt.name.toLowerCase()
+        ),
+      }));
+      return;
+    }
+    const defaultBranches =
+      clientEnt.supportedPlacements && clientEnt.supportedPlacements.length > 0
+        ? [clientEnt.supportedPlacements[0].name]
+        : ['Semua Cabang'];
+    const nextAssignment: EmployeeClientAssignment = {
+      entityId: clientEnt.id,
+      entityName: clientEnt.name,
+      branches: defaultBranches,
+    };
+    setForm((prev) => ({
+      ...prev,
+      handledClients: [...(prev.handledClients ?? []), nextAssignment],
+    }));
+  };
+
+  const toggleHandledClientAllBranches = (clientName: string) => {
+    setForm((prev) => ({
+      ...prev,
+      handledClients: (prev.handledClients ?? []).map((item) => {
+        if (item.entityName.toLowerCase() !== clientName.toLowerCase()) return item;
+        const isAll = item.branches.includes('Semua Cabang');
+        return {
+          ...item,
+          branches: isAll ? [] : ['Semua Cabang'],
+        };
+      }),
+    }));
+  };
+
+  const toggleHandledClientBranch = (clientName: string, branchName: string) => {
+    setForm((prev) => ({
+      ...prev,
+      handledClients: (prev.handledClients ?? []).map((item) => {
+        if (item.entityName.toLowerCase() !== clientName.toLowerCase()) return item;
+        const withoutAll = item.branches.filter((b) => b !== 'Semua Cabang');
+        const hasBranch = withoutAll.some((b) => b.toLowerCase() === branchName.toLowerCase());
+        const nextBranches = hasBranch
+          ? withoutAll.filter((b) => b.toLowerCase() !== branchName.toLowerCase())
+          : [...withoutAll, branchName];
+        return {
+          ...item,
+          branches: nextBranches.length > 0 ? nextBranches : ['Semua Cabang'],
+        };
+      }),
+    }));
+  };
+
+  const addCustomHandledBranch = (clientName: string) => {
+    const raw = (customHandledBranchByEntity[clientName] ?? '').trim();
+    if (!raw) return;
+    setForm((prev) => ({
+      ...prev,
+      handledClients: (prev.handledClients ?? []).map((item) => {
+        if (item.entityName.toLowerCase() !== clientName.toLowerCase()) return item;
+        const withoutAll = item.branches.filter((b) => b !== 'Semua Cabang');
+        if (withoutAll.some((b) => b.toLowerCase() === raw.toLowerCase())) return item;
+        return {
+          ...item,
+          branches: [...withoutAll, raw],
+        };
+      }),
+    }));
+    setCustomHandledBranchByEntity((prev) => ({ ...prev, [clientName]: '' }));
+  };
+
+  const toggleAdditionalExternalBranch = (branchName: string) => {
+    setForm((prev) => {
+      const current = prev.additionalBranches ?? [];
+      const has = current.some((b) => b.toLowerCase() === branchName.toLowerCase());
+      return {
+        ...prev,
+        additionalBranches: has
+          ? current.filter((b) => b.toLowerCase() !== branchName.toLowerCase())
+          : [...current, branchName],
+      };
+    });
   };
 
   const handleHistoryFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -487,14 +649,46 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                 </div>
                 <div>
                   <dt className="text-[#64748B]">Status Kerja</dt>
-                  <dd className="font-bold text-[#16A36A] mt-0.5">{employee.status}</dd>
+                  <dd
+                    className={`font-bold mt-0.5 ${
+                      employee.status === 'Aktif'
+                        ? 'text-[#16A36A]'
+                        : employee.status === 'Probation'
+                          ? 'text-[#B87D00]'
+                          : 'text-[#DC3545]'
+                    }`}
+                  >
+                    {employee.status}
+                    {employee.status === 'Resign' && employee.resignDate
+                      ? ` · Efektif ${formatIndonesianDate(employee.resignDate)}`
+                      : ''}
+                  </dd>
+                  {employee.status === 'Resign' && employee.resignReason && (
+                    <dd className="text-[11px] text-[#64748B] mt-0.5">
+                      Alasan: {employee.resignReason}
+                    </dd>
+                  )}
                 </div>
                 <div>
-                  <dt className="text-[#64748B]">Unit / Klien Penempatan</dt>
+                  <dt className="text-[#64748B]">Jalur Penempatan</dt>
+                  <dd className="font-semibold text-[#102B69] mt-0.5">
+                    {employee.employmentType === 'Internal'
+                      ? 'Internal Perusahaan'
+                      : 'Eksternal (Penempatan Klien)'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#64748B]">
+                    {employee.employmentType === 'Internal' ? 'Unit Internal' : 'Client Penempatan'}
+                  </dt>
                   <dd className="font-semibold text-[#102B69] mt-0.5">{employee.entityName}</dd>
                 </div>
                 <div>
-                  <dt className="text-[#64748B]">Cabang / Area Penempatan</dt>
+                  <dt className="text-[#64748B]">
+                    {employee.employmentType === 'Internal'
+                      ? 'Kantor Kerja Internal'
+                      : 'Cabang / Area Penempatan Utama'}
+                  </dt>
                   <dd className="font-semibold text-[#172033] mt-0.5 flex flex-wrap items-center gap-2">
                     <span>
                       {employee.placementName || employee.placementLocation || '—'}
@@ -514,6 +708,35 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                     )}
                   </dd>
                 </div>
+                {employee.employmentType === 'Internal' && (
+                  <div className="sm:col-span-2 lg:col-span-3 p-3 bg-[#F8FAFC] border border-[#E2E8F0] rounded-[4px]">
+                    <dt className="text-[#64748B] font-semibold">
+                      Client &amp; Cabang yang Di-handle (Internal)
+                    </dt>
+                    <dd className="mt-1">
+                      {(employee.handledClients ?? []).length > 0 ? (
+                        <ul className="space-y-1 text-[#102B69] font-medium">
+                          {formatEmployeeHandledClientsSummary(employee).map((line, i) => (
+                            <li key={i}>• {line}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <span className="text-[#64748B]">
+                          Operasional internal murni (belum ditugaskan meng-handle client)
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                )}
+                {employee.employmentType === 'Penempatan Klien' &&
+                  (employee.additionalBranches ?? []).length > 0 && (
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <dt className="text-[#64748B]">Cabang Tambahan yang Di-cover</dt>
+                      <dd className="font-semibold text-[#102B69] mt-0.5">
+                        {employee.additionalBranches?.join(', ')}
+                      </dd>
+                    </div>
+                  )}
                 <div>
                   <dt className="text-[#64748B]">Jabatan &amp; Departemen</dt>
                   <dd className="font-semibold text-[#172033] mt-0.5">
@@ -1150,9 +1373,60 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                 )}
               </div>
 
+              <div className="sm:col-span-2 lg:col-span-3 p-3.5 bg-[#F8FAFC] border border-[#E2E8F0] rounded-[4px] space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-bold text-[#102B69]">
+                      Penempatan Karyawan: Internal atau Eksternal (Client) *
+                    </p>
+                    <p className="text-[11px] text-[#64748B] mt-0.5">
+                      {form.employmentType === 'Internal'
+                        ? 'Karyawan internal perusahaan — dapat diatur untuk meng-handle client & cabang tertentu.'
+                        : 'Karyawan eksternal — ditempatkan langsung pada client, posisi, dan cabang tertentu.'}
+                    </p>
+                  </div>
+                  <div
+                    role="group"
+                    aria-label="Pilih jalur penempatan karyawan"
+                    className="inline-flex p-1 bg-white border border-[#E2E8F0] rounded-[4px] gap-1"
+                  >
+                    <button
+                      type="button"
+                      data-testid="emp-type-internal"
+                      disabled={internalEntityOptions.length === 0}
+                      aria-pressed={form.employmentType === 'Internal'}
+                      onClick={() => handleEmploymentCategorySwitch('Internal')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-[3px] cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+                        form.employmentType === 'Internal'
+                          ? 'bg-[#102B69] text-white'
+                          : 'text-[#64748B] hover:text-[#102B69]'
+                      }`}
+                    >
+                      Internal Perusahaan
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="emp-type-external"
+                      disabled={clientEntityOptions.length === 0}
+                      aria-pressed={form.employmentType === 'Penempatan Klien'}
+                      onClick={() => handleEmploymentCategorySwitch('Penempatan Klien')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-[3px] cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+                        form.employmentType === 'Penempatan Klien'
+                          ? 'bg-[#1468E8] text-white'
+                          : 'text-[#64748B] hover:text-[#102B69]'
+                      }`}
+                    >
+                      Eksternal (Client)
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <label htmlFor="emp-modal-entity" className="block font-semibold text-[#172033] mb-1">
-                  Unit Internal / Klien Penempatan *
+                  {form.employmentType === 'Internal'
+                    ? 'Unit Internal *'
+                    : 'Client Penempatan (Eksternal) *'}
                 </label>
                 <select
                   id="emp-modal-entity"
@@ -1160,20 +1434,37 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                   onChange={(e) => handleEntityChange(e.target.value)}
                   className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] text-[#102B69] font-medium"
                 >
-                  {entityOptions.map((ent) => (
+                  {categoryFilteredEntities.map((ent) => (
                     <option key={ent.id} value={ent.name}>
-                      {ent.name} ({ent.category === 'Internal' ? 'Internal' : 'Klien'})
+                      {ent.name}
                     </option>
                   ))}
+                  {form.entityName &&
+                    !categoryFilteredEntities.some((e) => e.name === form.entityName) && (
+                      <option value={form.entityName}>{form.entityName}</option>
+                    )}
                 </select>
                 {errors.entityName && <p className="text-[#DC3545] mt-1">{errors.entityName}</p>}
               </div>
 
               <div>
-                <label htmlFor="emp-modal-position" className="block font-semibold text-[#172033] mb-1">
-                  Jabatan / Posisi *
-                </label>
-                {entitySupportedPositions.length > 0 ? (
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label htmlFor="emp-modal-position" className="font-semibold text-[#172033]">
+                    {form.employmentType === 'Internal'
+                      ? 'Posisi / Jabatan Internal *'
+                      : 'Posisi / Jabatan di Client *'}
+                  </label>
+                  {entitySupportedPositions.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setCustomPositionInput((v) => !v)}
+                      className="text-[11px] font-semibold text-[#1468E8] hover:underline cursor-pointer"
+                    >
+                      {customPositionInput ? 'Pilih dari daftar' : 'Tulis posisi manual'}
+                    </button>
+                  )}
+                </div>
+                {entitySupportedPositions.length > 0 && !customPositionInput ? (
                   <select
                     id="emp-modal-position"
                     value={form.position}
@@ -1199,7 +1490,7 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                     ))}
                     {form.position &&
                       !entitySupportedPositions.some((p) => p.title === form.position) && (
-                        <option value={form.position}>{form.position} (Data Lama)</option>
+                        <option value={form.position}>{form.position}</option>
                       )}
                   </select>
                 ) : (
@@ -1208,7 +1499,7 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                     type="text"
                     value={form.position}
                     onChange={(e) => setForm({ ...form, position: e.target.value })}
-                    placeholder="Isi posisi / jabatan"
+                    placeholder="Contoh: Koordinator Lapangan / PIC Client"
                     className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] text-[#172033]"
                   />
                 )}
@@ -1216,10 +1507,23 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
               </div>
 
               <div>
-                <label htmlFor="emp-modal-placement" className="block font-semibold text-[#172033] mb-1">
-                  Penempatan Cabang / Area
-                </label>
-                {entitySupportedPlacements.length > 0 ? (
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label htmlFor="emp-modal-placement" className="font-semibold text-[#172033]">
+                    {form.employmentType === 'Internal'
+                      ? 'Kantor Kerja Internal'
+                      : 'Cabang Penempatan Utama'}
+                  </label>
+                  {entitySupportedPlacements.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setCustomPlacementInput((v) => !v)}
+                      className="text-[11px] font-semibold text-[#1468E8] hover:underline cursor-pointer"
+                    >
+                      {customPlacementInput ? 'Pilih cabang terdaftar' : 'Isi cabang manual'}
+                    </button>
+                  )}
+                </div>
+                {entitySupportedPlacements.length > 0 && !customPlacementInput ? (
                   <select
                     id="emp-modal-placement"
                     value={form.placementId || ''}
@@ -1245,16 +1549,18 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                   </select>
                 ) : (
                   <input
+                    id="emp-modal-placement"
                     type="text"
                     value={form.placementName ?? form.placementLocation ?? ''}
                     onChange={(e) =>
                       setForm({
                         ...form,
+                        placementId: '',
                         placementName: e.target.value,
                         placementLocation: e.target.value,
                       })
                     }
-                    placeholder="Lokasi kerja / cabang penempatan"
+                    placeholder="Nama cabang / area penempatan"
                     className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] text-[#172033]"
                   />
                 )}
@@ -1270,6 +1576,219 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                   </a>
                 )}
               </div>
+
+              {/* Khusus Internal: Pengaturan Handle Client & Cabang Mana Saja */}
+              {form.employmentType === 'Internal' && (
+                <div
+                  data-testid="internal-client-handling-panel"
+                  className="sm:col-span-2 lg:col-span-3 p-4 bg-[#F8FAFC] border border-[#C9DDFB] rounded-[4px] space-y-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="font-bold text-[#102B69]">
+                        Pengaturan Handle Client &amp; Cabang (Khusus Karyawan Internal)
+                      </p>
+                      <p className="text-[11px] text-[#64748B] mt-0.5">
+                        Centang client dan cabang mana saja yang ditangani oleh karyawan internal
+                        ini. Tidak menggandakan hitungan karyawan aktif pada client.
+                      </p>
+                    </div>
+                    <span className="text-[11px] font-semibold text-[#102B69] tabular-nums">
+                      {(form.handledClients ?? []).length > 0
+                        ? `Meng-handle ${(form.handledClients ?? []).length} client`
+                        : 'Operasional internal murni'}
+                    </span>
+                  </div>
+
+                  {handleableClientOptions.length === 0 ? (
+                    <p className="text-[11px] text-[#64748B]">
+                      Belum ada data client aktif terdaftar pada Master Unit &amp; Client.
+                    </p>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {handleableClientOptions.map((clientEnt) => {
+                        const matchedAssign = (form.handledClients ?? []).find(
+                          (c) => c.entityName.toLowerCase() === clientEnt.name.toLowerCase()
+                        );
+                        const isChecked = Boolean(matchedAssign);
+                        const branches = matchedAssign?.branches ?? [];
+                        const isAllBranches = branches.includes('Semua Cabang');
+                        const registeredLocations = clientEnt.supportedPlacements ?? [];
+                        const extraCustomBranches = branches.filter(
+                          (b) =>
+                            b !== 'Semua Cabang' &&
+                            !registeredLocations.some(
+                              (loc) => loc.name.toLowerCase() === b.toLowerCase()
+                            )
+                        );
+
+                        return (
+                          <div
+                            key={clientEnt.id}
+                            className={`p-3 rounded-[4px] border transition-colors ${
+                              isChecked
+                                ? 'bg-white border-[#1468E8]'
+                                : 'bg-white/60 border-[#E2E8F0]'
+                            }`}
+                          >
+                            <label className="flex items-center justify-between gap-3 cursor-pointer">
+                              <span className="flex items-center gap-2.5 font-semibold text-[#102B69]">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => toggleHandledClient(clientEnt)}
+                                  className="w-4 h-4 accent-[#1468E8]"
+                                />
+                                <span>{clientEnt.name}</span>
+                              </span>
+                              <span className="text-[11px] text-[#64748B] tabular-nums">
+                                {registeredLocations.length} cabang terdaftar
+                              </span>
+                            </label>
+
+                            {isChecked && (
+                              <div className="mt-2.5 pt-2.5 border-t border-[#F1F5F9] pl-6 space-y-2">
+                                <p className="text-[11px] font-semibold text-[#64748B]">
+                                  Pilih cabang yang di-handle di {clientEnt.name}:
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                  <label className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-[3px] border border-[#E2E8F0] bg-[#F5F7FA] text-[#102B69] cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={isAllBranches}
+                                      onChange={() => toggleHandledClientAllBranches(clientEnt.name)}
+                                      className="accent-[#1468E8]"
+                                    />
+                                    <span>Semua Cabang</span>
+                                  </label>
+                                  {registeredLocations.map((loc) => {
+                                    const branchChecked =
+                                      !isAllBranches &&
+                                      branches.some(
+                                        (b) => b.toLowerCase() === loc.name.toLowerCase()
+                                      );
+                                    return (
+                                      <label
+                                        key={loc.id}
+                                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-[3px] border cursor-pointer ${
+                                          branchChecked
+                                            ? 'bg-[#EAF2FF] border-[#1468E8] text-[#102B69] font-semibold'
+                                            : 'bg-white border-[#E2E8F0] text-[#172033]'
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={branchChecked}
+                                          onChange={() =>
+                                            toggleHandledClientBranch(clientEnt.name, loc.name)
+                                          }
+                                          className="accent-[#1468E8]"
+                                        />
+                                        <span>
+                                          {loc.name} ({loc.area})
+                                        </span>
+                                      </label>
+                                    );
+                                  })}
+                                  {extraCustomBranches.map((extra) => (
+                                    <label
+                                      key={extra}
+                                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-[3px] border bg-[#EAF2FF] border-[#1468E8] text-[#102B69] cursor-pointer"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked
+                                        onChange={() =>
+                                          toggleHandledClientBranch(clientEnt.name, extra)
+                                        }
+                                        className="accent-[#1468E8]"
+                                      />
+                                      <span>{extra}</span>
+                                    </label>
+                                  ))}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 pt-1">
+                                  <input
+                                    type="text"
+                                    value={customHandledBranchByEntity[clientEnt.name] ?? ''}
+                                    onChange={(e) =>
+                                      setCustomHandledBranchByEntity((prev) => ({
+                                        ...prev,
+                                        [clientEnt.name]: e.target.value,
+                                      }))
+                                    }
+                                    placeholder="Tambah cabang lain (opsional)..."
+                                    aria-label={`Tambah cabang lain untuk ${clientEnt.name}`}
+                                    className="px-2.5 py-1 text-[11px] bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] w-full sm:w-64 text-[#172033]"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => addCustomHandledBranch(clientEnt.name)}
+                                    className="px-2.5 py-1 text-[11px] font-semibold text-[#102B69] bg-white hover:bg-[#EAF2FF] border border-[#E2E8F0] rounded-[4px] cursor-pointer"
+                                  >
+                                    + Tambah Cabang
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Khusus Eksternal: Opsi Cabang Tambahan bila Mobile / Multi-Cabang */}
+              {form.employmentType === 'Penempatan Klien' &&
+                entitySupportedPlacements.length > 1 && (
+                  <div
+                    data-testid="external-additional-branches"
+                    className="sm:col-span-2 lg:col-span-3 p-3.5 bg-[#F8FAFC] border border-[#E2E8F0] rounded-[4px] space-y-2"
+                  >
+                    <p className="font-semibold text-[#102B69]">
+                      Cabang Tambahan yang Di-cover di {form.entityName} (Opsional)
+                    </p>
+                    <p className="text-[11px] text-[#64748B]">
+                      Centang hanya jika karyawan eksternal ini juga merangkap/mobile ke cabang lain
+                      pada client yang sama.
+                    </p>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {entitySupportedPlacements
+                        .filter(
+                          (loc) =>
+                            loc.id !== form.placementId &&
+                            loc.name.toLowerCase() !== (form.placementName ?? '').toLowerCase()
+                        )
+                        .map((loc) => {
+                          const checked = (form.additionalBranches ?? []).some(
+                            (b) => b.toLowerCase() === loc.name.toLowerCase()
+                          );
+                          return (
+                            <label
+                              key={loc.id}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] rounded-[3px] border cursor-pointer ${
+                                checked
+                                  ? 'bg-[#EAF2FF] border-[#1468E8] text-[#102B69] font-semibold'
+                                  : 'bg-white border-[#E2E8F0] text-[#172033]'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleAdditionalExternalBranch(loc.name)}
+                                className="accent-[#1468E8]"
+                              />
+                              <span>
+                                {loc.name} ({loc.area})
+                              </span>
+                            </label>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
 
               <div>
                 <label className="block font-semibold text-[#172033] mb-1">Departemen / Tim</label>
@@ -1292,16 +1811,59 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
                 <label className="block font-semibold text-[#172033] mb-1">Status Karyawan</label>
                 <select
                   value={form.status}
-                  onChange={(e) =>
-                    setForm({ ...form, status: e.target.value as EmployeeFormInput['status'] })
-                  }
+                  onChange={(e) => {
+                    const nextStatus = e.target.value as EmployeeFormInput['status'];
+                    setForm({
+                      ...form,
+                      status: nextStatus,
+                      resignDate:
+                        nextStatus === 'Resign'
+                          ? form.resignDate || '2026-11-15'
+                          : form.resignDate,
+                    });
+                  }}
                   className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] text-[#102B69]"
                 >
                   <option value="Aktif">Aktif</option>
                   <option value="Probation">Probation</option>
+                  <option value="Resign">Resign (Nonaktif Portal + Final Settlement)</option>
                   <option value="Nonaktif">Nonaktif</option>
                 </select>
               </div>
+
+              {form.status === 'Resign' && (
+                <>
+                  <div>
+                    <label className="block font-semibold text-[#172033] mb-1">
+                      Tanggal Efektif Resign *
+                    </label>
+                    <input
+                      type="date"
+                      value={form.resignDate ?? ''}
+                      onChange={(e) => setForm({ ...form, resignDate: e.target.value })}
+                      className="w-full px-3 py-2 bg-[#FFFBEB] border border-[#F59E0B] rounded-[4px] text-[#172033] tabular-nums"
+                    />
+                    {errors.resignDate && (
+                      <p className="text-[#DC3545] mt-1">{errors.resignDate}</p>
+                    )}
+                    <p className="text-[11px] text-[#64748B] mt-1">
+                      Dipakai untuk hitung gaji prorata Final Settlement &amp; menonaktifkan login portal.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-[#172033] mb-1">
+                      Keterangan / Alasan Resign
+                    </label>
+                    <input
+                      type="text"
+                      value={form.resignReason ?? ''}
+                      onChange={(e) => setForm({ ...form, resignReason: e.target.value })}
+                      placeholder="Mis: Mengundurkan diri / Habis kontrak"
+                      className="w-full px-3 py-2 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] text-[#172033]"
+                    />
+                  </div>
+                </>
+              )}
 
               <div>
                 <label className="block font-semibold text-[#172033] mb-1">Jenis Kontrak</label>

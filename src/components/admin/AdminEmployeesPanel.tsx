@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Edit3, Eye, Mail, MapPin, MessageCircle, Search } from 'lucide-react';
+import { Edit3, Eye, Mail, MapPin, MessageCircle, Plus, Search } from 'lucide-react';
 import {
   ContractHistoryItem,
   DepartmentRecord,
@@ -13,9 +13,11 @@ import {
   calculateDaysRemaining,
   countUploadedDocuments,
   filterEmployees,
+  formatEmployeeHandledClientsSummary,
   formatIndonesianDate,
   getContractEocIndicator,
   maskSensitiveNumber,
+  summarizeEmployeeStatusCounts,
 } from '../../data/masterAdminData';
 import { isValidMapsUrl } from '../../utils/mapsUrl';
 import { EmployeeModal } from '../dashboard/EmployeeModal';
@@ -27,6 +29,7 @@ interface AdminEmployeesPanelProps {
   departments: DepartmentRecord[];
   assignedScopes: string[];
   settings?: SystemSettingsConfig;
+  onCreateEmployee?: (data: EmployeeFormInput) => void;
   onUpdateEmployee: (id: string, data: EmployeeFormInput) => void;
   onResetFaceBiometric?: (employee: EmployeeRecord) => void;
   onMarkReviewed?: (employee: EmployeeRecord) => void;
@@ -43,6 +46,7 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
   departments,
   assignedScopes,
   settings,
+  onCreateEmployee,
   onUpdateEmployee,
   onResetFaceBiometric,
   onMarkReviewed,
@@ -50,7 +54,7 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [contractFilter, setContractFilter] = useState<EmployeeContractFilterMode>('Semua');
-  const [modalMode, setModalMode] = useState<'view' | 'edit' | null>(null);
+  const [modalMode, setModalMode] = useState<'view' | 'create' | 'edit' | null>(null);
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeRecord | null>(null);
   const [pkwtTarget, setPkwtTarget] = useState<{
     employee: EmployeeRecord;
@@ -62,6 +66,7 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
     : null;
 
   const visibleEmployees = filterEmployees(employees, query, 'Semua', contractFilter, 'Semua');
+  const statusCounts = summarizeEmployeeStatusCounts(employees);
   const scopedEntities = entities.filter((e) => assignedScopes.includes(e.name));
   const completeDocsCount = employees.filter((e) => {
     const c = countUploadedDocuments(e.documents);
@@ -70,6 +75,45 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
 
   return (
     <div className="space-y-6">
+      <div
+        data-testid="admin-employees-status-summary"
+        className="grid grid-cols-1 sm:grid-cols-2 gap-4"
+      >
+        <div
+          data-testid="admin-employees-active-card"
+          className="bg-white border border-[#E2E8F0] rounded-[6px] p-4"
+        >
+          <p className="text-xs font-semibold text-[#64748B]">Karyawan Aktif (Cakupan)</p>
+          <p className="text-2xl font-extrabold text-[#16A36A] tabular-nums mt-1">
+            {statusCounts.activeWorkingCount} Orang
+          </p>
+          <p className="text-xs text-[#64748B] mt-1 tabular-nums">
+            <strong className="text-[#16A36A]">{statusCounts.activeCount} Aktif</strong> ·{' '}
+            <strong className="text-[#B87D00]">{statusCounts.probationCount} Probation</strong> ·
+            Masuk hitungan karyawan aktif
+          </p>
+        </div>
+
+        <div
+          data-testid="admin-employees-inactive-card"
+          className="bg-white border border-[#E2E8F0] rounded-[6px] p-4"
+        >
+          <p className="text-xs font-semibold text-[#64748B]">Karyawan Nonaktif (Cakupan)</p>
+          <p
+            className={`text-2xl font-extrabold tabular-nums mt-1 ${
+              statusCounts.inactiveOrResignedCount > 0 ? 'text-[#DC3545]' : 'text-[#102B69]'
+            }`}
+          >
+            {statusCounts.inactiveOrResignedCount} Orang
+          </p>
+          <p className="text-xs text-[#64748B] mt-1 tabular-nums">
+            <strong className="text-[#DC3545]">{statusCounts.resignCount} Resign</strong> ·{' '}
+            <strong className="text-[#475569]">{statusCounts.nonaktifCount} Nonaktif</strong> ·
+            Tidak masuk hitungan aktif
+          </p>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white border border-[#E2E8F0] rounded-[6px] p-4">
           <p className="text-xs font-semibold text-[#64748B]">Karyawan Cakupan Anda</p>
@@ -130,7 +174,16 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
 
             <div className="inline-flex flex-wrap p-1 bg-[#F5F7FA] border border-[#E2E8F0] rounded-[4px] gap-0.5">
               {(
-                ['Semua', 'PKWT', 'PKWTT', 'Probation', 'Segera Habis', 'Baru'] as const
+                [
+                  'Semua',
+                  'PKWT',
+                  'PKWTT',
+                  'Probation',
+                  'Resign',
+                  'Nonaktif',
+                  'Segera Habis',
+                  'Baru',
+                ] as const
               ).map((mode) => (
                 <button
                   key={mode}
@@ -146,6 +199,20 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
                 </button>
               ))}
             </div>
+
+            {onCreateEmployee && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedEmployee(null);
+                  setModalMode('create');
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Tambah Karyawan</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -241,6 +308,10 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
                             <span>
                               {emp.placementName || emp.placementLocation}
                               {emp.placementArea ? ` · ${emp.placementArea}` : ''}
+                              {emp.employmentType === 'Penempatan Klien' &&
+                              (emp.additionalBranches ?? []).length > 0
+                                ? ` (+${emp.additionalBranches?.length} cabang)`
+                                : ''}
                             </span>
                             {emp.placementMapsUrl && isValidMapsUrl(emp.placementMapsUrl) && (
                               <a
@@ -255,8 +326,31 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
                             )}
                           </p>
                         )}
+                        {emp.employmentType === 'Internal' &&
+                          (emp.handledClients ?? []).length > 0 && (
+                            <p className="text-[11px] text-[#1468E8] font-medium mt-0.5">
+                              Handle: {formatEmployeeHandledClientsSummary(emp).join(' · ')}
+                            </p>
+                          )}
                         <p className="text-[11px] text-[#64748B] mt-0.5">
-                          {emp.employmentType} · {emp.status}
+                          {emp.employmentType === 'Internal'
+                            ? 'Internal'
+                            : 'Eksternal (Penempatan Klien)'}{' '}
+                          ·{' '}
+                          <span
+                            className={`font-semibold ${
+                              emp.status === 'Aktif'
+                                ? 'text-[#16A36A]'
+                                : emp.status === 'Probation'
+                                  ? 'text-[#B87D00]'
+                                  : 'text-[#DC3545]'
+                            }`}
+                          >
+                            {emp.status}
+                            {emp.status === 'Resign' && emp.resignDate
+                              ? ` (${formatIndonesianDate(emp.resignDate)})`
+                              : ''}
+                          </span>
                         </p>
                       </td>
                       <td className="py-3.5 px-4 text-xs tabular-nums whitespace-nowrap">
@@ -360,12 +454,13 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
         </div>
       </section>
 
-      {modalMode && liveSelectedEmployee && (
+      {modalMode && (modalMode === 'create' || liveSelectedEmployee) && (
         <EmployeeModal
-          key={`${modalMode}-${liveSelectedEmployee.id}`}
+          key={`${modalMode}-${liveSelectedEmployee?.id ?? 'new'}`}
           mode={modalMode}
-          employee={liveSelectedEmployee}
+          employee={modalMode === 'create' ? null : liveSelectedEmployee}
           entities={scopedEntities.length > 0 ? scopedEntities : entities}
+          allEntities={entities}
           departments={departments}
           onClose={() => {
             setModalMode(null);
@@ -387,6 +482,8 @@ export const AdminEmployeesPanel: React.FC<AdminEmployeesPanelProps> = ({
           onSave={(data, existingId) => {
             if (existingId) {
               onUpdateEmployee(existingId, data);
+            } else {
+              onCreateEmployee?.(data);
             }
             setModalMode(null);
             setSelectedEmployee(null);

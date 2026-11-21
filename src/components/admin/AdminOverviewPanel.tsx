@@ -10,6 +10,7 @@ import {
   OnboardingCandidateRecord,
   buildLeaveFollowupMailtoUrl,
   buildLeaveFollowupWhatsappUrl,
+  summarizeEmployeeStatusCounts,
 } from '../../data/masterAdminData';
 import { WorkforceAttendanceAnalyticsSection } from '../dashboard/WorkforceAttendanceAnalyticsSection';
 
@@ -69,22 +70,62 @@ export const AdminOverviewPanel: React.FC<AdminOverviewPanelProps> = ({
     (sum, ent) => sum + Math.max(1, ent.supportedPositions?.length ?? 0),
     0
   );
+  const statusCounts = summarizeEmployeeStatusCounts(employees);
 
   const findEmployee = (code: string) =>
     employees.find((emp) => emp.employeeCode.trim().toLowerCase() === code.trim().toLowerCase());
 
   return (
     <div className="space-y-6">
-      {/* Row 1: Total Karyawan & Total Client */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="bg-white border border-[#E2E8F0] rounded-[6px] p-5">
-          <p className="text-xs font-semibold text-[#64748B]">Total Karyawan</p>
-          <p className="text-2xl font-extrabold text-[#102B69] tabular-nums mt-1">
+      {/* Row 1: Karyawan Aktif, Karyawan Nonaktif & Total Client */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div
+          data-testid="admin-overview-active-karyawan"
+          className="bg-white border border-[#E2E8F0] rounded-[6px] p-5"
+        >
+          <p className="text-xs font-semibold text-[#64748B]">Karyawan Aktif</p>
+          <p
+            data-testid="admin-overview-total-karyawan"
+            className="text-2xl font-extrabold text-[#16A36A] tabular-nums mt-1"
+          >
             {scopedTotalHeadcount} Orang
           </p>
           <p className="text-xs text-[#64748B] mt-1 tabular-nums">
             {scopedInternalHeadcount} internal · {scopedClientHeadcount} penempatan klien ·{' '}
             {scopedSupportedPositions} posisi aktif
+          </p>
+          <p
+            data-testid="admin-overview-active-breakdown"
+            className="text-[11px] text-[#64748B] mt-2 pt-2 border-t border-[#F1F5F9] tabular-nums"
+          >
+            Direktori Cakupan:{' '}
+            <strong className="text-[#16A36A]">{statusCounts.activeCount} Aktif</strong> ·{' '}
+            <strong className="text-[#B87D00]">{statusCounts.probationCount} Probation</strong>
+          </p>
+        </div>
+
+        <div
+          data-testid="admin-overview-inactive-karyawan"
+          className="bg-white border border-[#E2E8F0] rounded-[6px] p-5"
+        >
+          <p className="text-xs font-semibold text-[#64748B]">Karyawan Nonaktif</p>
+          <p
+            data-testid="admin-overview-inactive-total"
+            className={`text-2xl font-extrabold tabular-nums mt-1 ${
+              statusCounts.inactiveOrResignedCount > 0 ? 'text-[#DC3545]' : 'text-[#102B69]'
+            }`}
+          >
+            {statusCounts.inactiveOrResignedCount} Orang
+          </p>
+          <p
+            data-testid="admin-overview-status-breakdown"
+            className="text-xs text-[#64748B] mt-1 tabular-nums"
+          >
+            <strong className="text-[#DC3545]">{statusCounts.resignCount} Resign</strong> ·{' '}
+            <strong className="text-[#475569]">{statusCounts.nonaktifCount} Nonaktif</strong>
+          </p>
+          <p className="text-[11px] text-[#64748B] mt-2 pt-2 border-t border-[#F1F5F9]">
+            Tidak masuk hitungan aktif &amp; akses login diblokir
           </p>
         </div>
 

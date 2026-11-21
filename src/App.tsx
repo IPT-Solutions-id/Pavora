@@ -17,8 +17,9 @@ import { AdminDashboard } from './components/admin/AdminDashboard';
 import { RecruiterDashboard } from './components/recruiter/RecruiterDashboard';
 import { ApplicantDashboard } from './components/applicant/ApplicantDashboard';
 import { EmployeeDashboard } from './components/employee/EmployeeDashboard';
+import { PayrollDashboard } from './components/payroll/PayrollDashboard';
 import { useWorkspaceStore } from './hooks/useWorkspaceStore';
-import { MasterAdminUser } from './utils/validation';
+import { isPortalRoleTemporarilyDisabled, MasterAdminUser } from './utils/validation';
 import { CookieConsentBanner } from './components/CookieConsentBanner';
 import {
   CookieConsentPreferences,
@@ -146,6 +147,30 @@ export default function App() {
         </>
       );
     }
+    if (isPortalRoleTemporarilyDisabled(currentUser.role)) {
+      return (
+        <>
+          {quotaBanner}
+          <div className="min-h-screen bg-[#F5F7FA] flex items-center justify-center p-6">
+            <div className="max-w-md w-full bg-white border border-[#E2E8F0] rounded-[6px] p-6 text-center space-y-4">
+              <h1 className="text-lg font-bold text-[#102B69]">
+                Role {currentUser.role} Dinonaktifkan Sementara
+              </h1>
+              <p className="text-sm text-[#64748B] leading-relaxed">
+                Sistem saat ini difokuskan untuk Master Admin, Admin, Payroll, dan Karyawan.
+              </p>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="w-full px-4 py-2.5 text-sm font-semibold text-white bg-[#1468E8] hover:bg-[#102B69] rounded-[4px] cursor-pointer transition-colors"
+              >
+                Kembali ke Halaman Masuk
+              </button>
+            </div>
+          </div>
+        </>
+      );
+    }
     if (currentUser.role === 'Rekruter') {
       return (
         <>
@@ -167,6 +192,14 @@ export default function App() {
         <>
           {quotaBanner}
           <EmployeeDashboard user={currentUser} store={store} onLogout={handleLogout} />
+        </>
+      );
+    }
+    if (currentUser.role === 'Payroll') {
+      return (
+        <>
+          {quotaBanner}
+          <PayrollDashboard user={currentUser} store={store} onLogout={handleLogout} />
         </>
       );
     }

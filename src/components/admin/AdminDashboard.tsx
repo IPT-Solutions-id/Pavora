@@ -18,6 +18,7 @@ import {
   ContractHistoryItem,
   EmployeeRecord,
   calculateDaysRemaining,
+  filterActivityReportsByScopes,
   filterByAssignedScopes,
   formatAssignedScopesSummary,
 } from '../../data/masterAdminData';
@@ -101,6 +102,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
     selectedScope
   );
   const scopedSnapshots = filterByAssignedScopes(store.snapshots, effectiveScopes, selectedScope);
+  const scopedActivityReports = filterActivityReportsByScopes(
+    store.activityReports,
+    effectiveScopes,
+    selectedScope
+  );
   const scopedEntities = store.entities.filter((e) => effectiveScopes.includes(e.name));
 
   const pendingLeaveCount = scopedLeaveAbsences.filter((l) => l.status === 'Menunggu').length;
@@ -171,7 +177,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
               type="button"
               onClick={() => selectMenu(item.id)}
               aria-current={isActive ? 'page' : undefined}
-              className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-sm font-medium rounded-[4px] transition-colors duration-150 cursor-pointer text-left ${
+              className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-sm font-medium rounded-[4px] cursor-pointer text-left ${
                 isActive
                   ? 'bg-[#1468E8] text-white font-semibold'
                   : 'text-[#EAF2FF]/85 hover:bg-white/10 hover:text-white'
@@ -292,7 +298,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
               notifications={scopedNotifications}
               onSelectNotification={(notif) => {
                 store.markNotificationRead(notif.id);
-                if (
+                if (notif.type === 'activity-report-updated') {
+                  selectMenu('admin-reports');
+                } else if (
                   notif.type === 'leave-submitted' ||
                   notif.type === 'alpha-clarified' ||
                   notif.targetMenu === 'monitoring'
@@ -351,6 +359,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
               departments={store.departments}
               assignedScopes={effectiveScopes}
               settings={store.settings}
+              onCreateEmployee={(data) => store.createEmployee(data, actorLabel)}
               onUpdateEmployee={(id, data) => store.updateEmployee(id, data, actorLabel)}
               onResetFaceBiometric={(emp) => store.resetEmployeeFace(emp.id, actorLabel)}
               onMarkReviewed={(emp) => store.markEmployeeReviewed(emp.id)}
@@ -408,6 +417,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, store, onL
             <AdminReportsPanel
               snapshots={scopedSnapshots}
               employees={scopedEmployees}
+              activityReports={scopedActivityReports}
               auditLogs={store.auditLogs}
               assignedScopes={activeScopeList}
               adminName={user.name}

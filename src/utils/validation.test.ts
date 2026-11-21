@@ -19,6 +19,10 @@ import {
   PkwtPdfAssets,
 } from './pkwtPdfGenerator';
 import {
+  buildSwaproLeavePdfFilename,
+  generateSwaproLeavePdfBytes,
+} from './leaveFormPdfGenerator';
+import {
   validateDemoRequest,
   formatHeadcountLabel,
   validateLoginForm,
@@ -103,6 +107,18 @@ import {
   validateEmployeeInput,
   validateLeaveRequestSubmission,
   buildLiveOperationalSnapshots,
+  applyEmployeeHeadcountDelta,
+  isEmployeeActiveForHeadcount,
+  summarizeEmployeeStatusCounts,
+  normalizeEmployeePlacementInput,
+  formatEmployeeHandledClientsSummary,
+  INITIAL_ACTIVITY_REPORTS,
+  resolveEmployeeActivityScopeOptions,
+  validateActivityReportInput,
+  filterActivityReportsByScopes,
+  filterActivityReports,
+  summarizeActivityReports,
+  buildActivityReportsCsv,
 } from '../data/masterAdminData';
 import {
   buildLiveAttendanceFeed,
@@ -110,6 +126,12 @@ import {
   buildWorkforceOverviewAnalytics,
   computeNiceZeroAxisScale,
 } from './overviewAnalytics';
+import {
+  buildActivityStampOverlayLines,
+  formatGpsCoordinateText,
+  formatReverseGeocodeAddress,
+  formatTimestampCameraLabel,
+} from './activityTimestampCamera';
 import {
   INITIAL_APPLICANT_PROFILES,
   INITIAL_JOB_APPLICATIONS,
@@ -158,6 +180,26 @@ import {
   formatBpjsKesDisplay,
   formatBpjsTkDisplay,
 } from './bpjsCard';
+import {
+  INITIAL_PAYROLL_TARIFFS,
+  INITIAL_REGIONAL_WAGE_TIERS,
+  buildPayrollRecapWorkbookBytes,
+  buildPayrollTemplateWorkbookBytes,
+  calculateIndonesianPph21Ter,
+  calculatePkwtCompensationAmount,
+  calculateResignProrataRatio,
+  computePayrollHeadcountSummary,
+  computePayrollSlip,
+  isEmployeeEligibleForPayrollRun,
+  parseAndValidatePayrollExcel,
+  resolveEmployeeBaseSalary,
+  upsertPayrollSlipsIdempotent,
+} from './payrollCalculator';
+import {
+  buildSlipGajiDownloadFilename,
+  generateSlipGajiPdfBytes,
+} from './slipGajiPdfGenerator';
+import * as XLSX from 'xlsx';
 
 test('validateDemoRequest rejects empty fields with Indonesian error messages', () => {
   const result = validateDemoRequest({
@@ -208,22 +250,22 @@ test('formatHeadcountLabel maps option value to readable label', () => {
   assert.equal(formatHeadcountLabel('custom'), 'custom');
 });
 
-test('HRIS role helpers return all 4 required roles and relevant modules without payroll wording', () => {
+test('HRIS role helpers return all 4 required landing roles and PRIORITY_ROLE_OPTIONS includes Payroll', () => {
   assert.equal(ROLES.length, 4);
   assert.equal(getRoleById('rekruter').name, 'Rekruter');
   assert.equal(getRoleById('karyawan').name, 'Karyawan');
   assert.ok(getModulesForRole('master-admin').length >= 2);
   assert.ok(getModulesForRole('karyawan').some((m) => m.id === 'pkwt-bpjs-compliance'));
   assert.equal(END_TO_END_WORKFLOW.length, 5);
+  assert.ok(PRIORITY_ROLE_OPTIONS.some((opt) => opt.value === 'Payroll'));
 
   const landingSerialized = JSON.stringify({
     ROLES,
     CAPABILITY_MODULES,
     END_TO_END_WORKFLOW,
     IMPACT_STATS,
-    PRIORITY_ROLE_OPTIONS,
   }).toLowerCase();
-  for (const forbidden of ['payroll', 'penggajian', 'pph 21', 'slip gaji']) {
+  for (const forbidden of ['pph 21', 'slip gaji']) {
     assert.equal(
       landingSerialized.includes(forbidden),
       false,
@@ -540,24 +582,22 @@ test('generatePkwtPdfBytes renders exact 4 A4 pages with embedded SWAPRO fonts, 
   assert.equal(loadedNadia.getPageCount(), 4);
 });
 
-test('authenticatePortalUser supports Rekruter, seeded Pelamar, and newly registered Pelamar accounts', () => {
+test('authenticatePortalUser blocks temporarily disabled Rekruter & Pelamar roles while validating register helper', () => {
   const rec = authenticatePortalUser('swa-rama', '1234', INITIAL_APPLICANT_PROFILES);
-  assert.equal(rec.ok, true);
-  assert.equal(rec.user?.role, 'Rekruter');
-  assert.equal(rec.user?.name, 'Rama Wijaya');
+  assert.equal(rec.ok, false);
+  assert.ok(rec.error?.includes('dinonaktifkan sementara'));
 
   const recByEmail = authenticatePortalUser(
     'swa-rama@swapro-demo.co.id',
     '1234',
     INITIAL_APPLICANT_PROFILES
   );
-  assert.equal(recByEmail.ok, true);
-  assert.equal(recByEmail.user?.id, 'REC-008');
+  assert.equal(recByEmail.ok, false);
+  assert.ok(recByEmail.error?.includes('dinonaktifkan sementara'));
 
   const pelamar = authenticatePortalUser('swa-pelamar', '1234', INITIAL_APPLICANT_PROFILES);
-  assert.equal(pelamar.ok, true);
-  assert.equal(pelamar.user?.role, 'Pelamar');
-  assert.equal(pelamar.user?.applicantId, 'app-user-1');
+  assert.equal(pelamar.ok, false);
+  assert.ok(pelamar.error?.includes('dinonaktifkan sementara'));
 
   const customApplicantList = [
     ...INITIAL_APPLICANT_PROFILES,
@@ -571,9 +611,8 @@ test('authenticatePortalUser supports Rekruter, seeded Pelamar, and newly regist
     },
   ];
   const newPelamar = authenticatePortalUser('budi.cahyono@gmail.com', 'Password99', customApplicantList);
-  assert.equal(newPelamar.ok, true);
-  assert.equal(newPelamar.user?.role, 'Pelamar');
-  assert.equal(newPelamar.user?.applicantId, 'app-user-new');
+  assert.equal(newPelamar.ok, false);
+  assert.ok(newPelamar.error?.includes('dinonaktifkan sementara'));
 
   const wrongWa = validateRegisterForm({
     fullName: 'Budi Cahyono',
@@ -1200,10 +1239,10 @@ test('Centralized Account Management: summarizePortalAccountStats, PIN reset, ac
   );
   assert.equal(initialStats.activeInternalCount, 4);
   assert.equal(initialStats.activeEmployeeCount, 6);
-  assert.equal(initialStats.activeApplicantCount, 2);
-  assert.equal(initialStats.totalActiveAccounts, 12);
+  assert.equal(initialStats.activeApplicantCount, 0);
+  assert.equal(initialStats.totalActiveAccounts, 10);
   assert.ok(initialStats.pendingPkwtEmployeeAccounts >= 1);
-  assert.equal(initialStats.disabledOrLockedAccounts, 0);
+  assert.equal(initialStats.disabledOrLockedAccounts, 3);
 
   // 2. Resetting an employee password updates WA/Email credential message and login authentication
   const resetNadia = {
@@ -1562,8 +1601,8 @@ test('Role Admin WA & Email follow-up builders and RBAC Cuti/SKD authority separ
   assert.ok(presensiRbac.admin.includes('ACC Master Admin'));
 });
 
-test('Role Rekruter: assignedScopes isolation, Master Client position/placement vacancy sync, and applicant WA/Email builders', () => {
-  // 1. Authenticating Rama Wijaya (swa-rama) carries assignedScopes including BAF & Adira
+test('Role Rekruter: blocked at login while assignedScopes isolation, Master Client vacancy sync, and WA/Email helpers stay preserved', () => {
+  // 1. Authenticating Rama Wijaya (swa-rama) is blocked while Rekruter role is temporarily disabled
   const recLogin = authenticatePortalUser(
     'swa-rama',
     '1234',
@@ -1571,13 +1610,11 @@ test('Role Rekruter: assignedScopes isolation, Master Client position/placement 
     INITIAL_EMPLOYEES,
     INITIAL_USERS
   );
-  assert.equal(recLogin.ok, true);
-  assert.equal(recLogin.user?.role, 'Rekruter');
-  assert.ok(recLogin.user?.assignedScopes.includes('Adira Finance — Penempatan Regional'));
-  assert.ok(recLogin.user?.assignedScopes.includes('BAF — Layanan Operasional Cabang'));
-  assert.equal(recLogin.user?.assignedScopes.includes('Kantor Pusat Operasional'), false);
+  assert.equal(recLogin.ok, false);
+  assert.ok(recLogin.error?.includes('dinonaktifkan sementara'));
 
-  const dinaScopes = recLogin.user?.assignedScopes ?? [];
+  const dinaScopes =
+    INITIAL_USERS.find((u) => u.employeeCode === 'REC-008')?.assignedScopes ?? [];
 
   // 2. Scope filtering isolates recruiter vacancies to assigned clients and selectedScope
   const scopedAll = filterRecruiterVacanciesByScope(INITIAL_VACANCIES, dinaScopes, 'Semua Cakupan');
@@ -2069,20 +2106,19 @@ test('cookieConsent helpers persist decisions, reject invalid payloads, and hide
   assert.equal(loadCookieConsent(mockStorage), null);
 });
 
-test('All 5 primary swa-* accounts authenticate cleanly across full workspace seed arrays with password 1234', () => {
-  const cases: Array<{
+test('Active 4 primary swa-* accounts authenticate cleanly while disabled swa-rama & swa-pelamar are blocked (Option A)', () => {
+  const activeCases: Array<{
     identifier: string;
-    expectedRole: 'Master Admin' | 'Admin' | 'Rekruter' | 'Karyawan' | 'Pelamar';
+    expectedRole: 'Master Admin' | 'Admin' | 'Payroll' | 'Karyawan';
     expectedName: string;
   }> = [
     { identifier: 'swa-fathur', expectedRole: 'Master Admin', expectedName: 'Fathurrahman' },
     { identifier: 'swa-ulan', expectedRole: 'Admin', expectedName: 'Ulan Rahmawati' },
-    { identifier: 'swa-rama', expectedRole: 'Rekruter', expectedName: 'Rama Wijaya' },
+    { identifier: 'swa-payroll', expectedRole: 'Payroll', expectedName: 'Dewi Anggraini' },
     { identifier: 'swa-rudi', expectedRole: 'Karyawan', expectedName: 'Rudi Hartono' },
-    { identifier: 'swa-pelamar', expectedRole: 'Pelamar', expectedName: 'Sari Wulandari' },
   ];
 
-  for (const item of cases) {
+  for (const item of activeCases) {
     const res = authenticatePortalUser(
       item.identifier,
       '1234',
@@ -2094,6 +2130,937 @@ test('All 5 primary swa-* accounts authenticate cleanly across full workspace se
     assert.equal(res.user?.role, item.expectedRole);
     assert.equal(res.user?.name, item.expectedName);
   }
+
+  for (const disabledId of ['swa-rama', 'swa-pelamar']) {
+    const blocked = authenticatePortalUser(
+      disabledId,
+      '1234',
+      INITIAL_APPLICANT_PROFILES,
+      INITIAL_EMPLOYEES,
+      INITIAL_USERS
+    );
+    assert.equal(blocked.ok, false, `Expected ${disabledId} to be blocked while disabled`);
+    assert.ok(blocked.error?.includes('dinonaktifkan sementara'));
+  }
+
+  // Fallback swa-payroll login works even if INITIAL_USERS is empty
+  const fallbackPayroll = authenticatePortalUser('swa-payroll', '1234');
+  assert.equal(fallbackPayroll.ok, true);
+  assert.equal(fallbackPayroll.user?.role, 'Payroll');
 });
+
+test('Payroll 4-tier regional base salary hierarchy handles UMR Jakarta, UMK Rp 3,5 jt, Rate Card, and below-UMR alerts', () => {
+  // 1. Jakarta employee with salary below UMR DKI (Rp 5,396,761) triggers belowUmrWarning
+  const dkiLowEmp = {
+    ...INITIAL_EMPLOYEES[1],
+    placementArea: 'Jabodetabek',
+    placementName: 'Adira Tebet',
+    salaryMonthly: 4500000,
+    salaryOverrideManual: true,
+  };
+  const dkiRes = resolveEmployeeBaseSalary(dkiLowEmp, INITIAL_ENTITIES, INITIAL_REGIONAL_WAGE_TIERS);
+  assert.equal(dkiRes.regionName.includes('DKI Jakarta'), true);
+  assert.equal(dkiRes.baseSalary, 4500000);
+  assert.equal(dkiRes.sourceTag, 'Override Kontrak Individu');
+  assert.equal(dkiRes.belowUmrWarning, true);
+
+  // 2. Regional employee with UMK Daerah Rp 3.500.000
+  const daerahEmp = {
+    ...INITIAL_EMPLOYEES[3],
+    regionalWageId: 'umr-daerah-35',
+    salaryMonthly: 3500000,
+    salaryOverrideManual: true,
+  };
+  const daerahRes = resolveEmployeeBaseSalary(
+    daerahEmp,
+    INITIAL_ENTITIES,
+    INITIAL_REGIONAL_WAGE_TIERS
+  );
+  assert.equal(daerahRes.baseSalary, 3500000);
+  assert.equal(daerahRes.belowUmrWarning, false);
+
+  // 3. Employee without override falls back to Client Position Rate Card or Regional UMR
+  const fallbackTierEmp = {
+    ...INITIAL_EMPLOYEES[0],
+    position: 'Posisi Tanpa Rate Card',
+    salaryMonthly: 0,
+    salaryOverrideManual: false,
+    regionalWageId: 'umr-sby',
+  };
+  const tierRes = resolveEmployeeBaseSalary(
+    fallbackTierEmp,
+    INITIAL_ENTITIES,
+    INITIAL_REGIONAL_WAGE_TIERS
+  );
+  assert.equal(tierRes.sourceTag, 'UMR Wilayah Penempatan');
+  assert.equal(tierRes.baseSalary, 4961753);
+});
+
+test('Payroll calculation engine computes BPJS Kes/JHT/JP, PPh 21 TER, PKWT Compensation PP 35/2021, and anti-double Excel validation', async () => {
+  const emp = INITIAL_EMPLOYEES[1]; // Nadia Kusuma (TK/0, PKWT)
+  const pkwtComp = calculatePkwtCompensationAmount(emp, emp.salaryMonthly ?? 5350000, 0);
+  assert.equal(pkwtComp.eligible, true);
+  assert.ok(pkwtComp.amount > 0);
+
+  const pph0 = calculateIndonesianPph21Ter(5350000, 'TK/0');
+  assert.equal(pph0.category, 'TER A');
+  assert.equal(pph0.taxAmount, 0);
+
+  const pphTaxed = calculateIndonesianPph21Ter(10000000, 'TK/0');
+  assert.equal(pphTaxed.rate, 0.02);
+  assert.equal(pphTaxed.taxAmount, 200000);
+
+  const slip = computePayrollSlip({
+    period: '2026-11',
+    employee: emp,
+    entities: INITIAL_ENTITIES,
+    tariffs: INITIAL_PAYROLL_TARIFFS,
+    attendanceLogs: INITIAL_ATTENDANCE_LOGS,
+    leaveAbsences: INITIAL_LEAVE_ABSENCES,
+    edits: {
+      fixedAllowance: 500000,
+      overtimePay: 300000,
+      pkwtCompensation: pkwtComp.amount,
+      loanKasbonDeduction: 100000,
+    },
+  });
+
+  assert.equal(slip.id, `2026-11::${emp.id}`);
+  assert.equal(slip.grossIncome, slip.baseSalary + 500000 + 300000 + pkwtComp.amount);
+  assert.equal(slip.bpjsKesEmployee, Math.round((slip.baseSalary + 500000) * 0.01));
+  assert.equal(slip.bpjsTkJhtEmployee, Math.round((slip.baseSalary + 500000) * 0.02));
+  assert.equal(slip.bpjsTkJpEmployee, Math.round((slip.baseSalary + 500000) * 0.01));
+  assert.equal(slip.takeHomePay, slip.grossIncome - slip.totalDeductions);
+
+  // Anti-Double Idempotent Upsert: Draft replaces Draft, Locked ('Disetujui') cannot be overwritten
+  const updatedDraft = { ...slip, overtimePay: 600000 };
+  const afterDraftUpsert = upsertPayrollSlipsIdempotent([slip], [updatedDraft]);
+  assert.equal(afterDraftUpsert.length, 1);
+  assert.equal(afterDraftUpsert[0].overtimePay, 600000);
+
+  const lockedSlip = { ...slip, status: 'Disetujui' as const };
+  const afterLockedAttempt = upsertPayrollSlipsIdempotent([lockedSlip], [updatedDraft]);
+  assert.equal(afterLockedAttempt.length, 1);
+  assert.equal(afterLockedAttempt[0].status, 'Disetujui');
+  assert.equal(afterLockedAttempt[0].overtimePay, 300000);
+
+  // Excel round-trip: Template -> Duplicate NIK detection -> Valid parsing
+  const templateBytes = buildPayrollTemplateWorkbookBytes({
+    period: '2026-11',
+    employees: INITIAL_EMPLOYEES,
+    entities: INITIAL_ENTITIES,
+    tariffs: INITIAL_PAYROLL_TARIFFS,
+  });
+  assert.ok(templateBytes.byteLength > 1000);
+
+  const dupWb = XLSX.utils.book_new();
+  const dupSheet = XLSX.utils.json_to_sheet([
+    {
+      NIK_Karyawan: emp.employeeCode,
+      Nama_Karyawan: emp.fullName,
+      Base_Gaji: 3500000,
+      Lembur: 250000,
+      Insentif_Bonus: 150000,
+    },
+    {
+      NIK_Karyawan: emp.employeeCode,
+      Nama_Karyawan: emp.fullName,
+      Base_Gaji: 3500000,
+      Lembur: 250000,
+    },
+  ]);
+  XLSX.utils.book_append_sheet(dupWb, dupSheet, 'Sheet1');
+  const dupBytes = new Uint8Array(XLSX.write(dupWb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer);
+
+  const parsed = parseAndValidatePayrollExcel({
+    fileBytes: dupBytes,
+    fileName: 'test-payroll.xlsx',
+    period: '2026-11',
+    mode: 'variable-merge',
+    employees: INITIAL_EMPLOYEES,
+    entities: INITIAL_ENTITIES,
+    tariffs: INITIAL_PAYROLL_TARIFFS,
+    attendanceLogs: INITIAL_ATTENDANCE_LOGS,
+    leaveAbsences: INITIAL_LEAVE_ABSENCES,
+  });
+  assert.equal(parsed.duplicateCount, 1);
+  assert.equal(parsed.warningCount, 1); // Mismatch base Rp 3,5 jt vs master Base
+  assert.equal(parsed.rows[0].slip?.overtimePay, 250000);
+  assert.equal(parsed.rows[0].slip?.baseSalary, slip.baseSalary); // variable-merge keeps master base
+
+  const recapBytes = buildPayrollRecapWorkbookBytes([slip], 'November 2026');
+  assert.ok(recapBytes.byteLength > 1000);
+
+  // Official Slip Gaji PDF bytes generation
+  const pubDir = path.resolve(process.cwd(), 'public');
+  const readAsset = (rel: string) => new Uint8Array(fs.readFileSync(path.join(pubDir, rel)));
+  const pdfBytes = await generateSlipGajiPdfBytes([slip], INITIAL_SETTINGS, {
+    regularFont: readAsset('fonts/carlito-latin-400-normal.ttf'),
+    boldFont: readAsset('fonts/carlito-latin-700-normal.ttf'),
+    logoPng: readAsset('assets/pkwt/swapro-logo.png'),
+  });
+  assert.ok(pdfBytes.byteLength > 5000);
+  const loaded = await PDFDocument.load(pdfBytes);
+  assert.equal(loaded.getPageCount(), 1);
+  assert.equal(buildSlipGajiDownloadFilename(slip), `Slip_Gaji_${emp.employeeCode}_2026-11.pdf`);
+});
+
+test('Resign employees are blocked from portal login (Option A), validated with resignDate, and receive prorated Final Settlement with headcount tracking & anti-double guard', async () => {
+  const activeEmp = INITIAL_EMPLOYEES[1]; // OUT-318 Nadia Kusuma (5,520,000)
+  const resignedEmp = {
+    ...activeEmp,
+    id: 'emp-resign-1',
+    employeeCode: 'OUT-999',
+    fullName: 'Citra Lestari (Resign)',
+    email: 'citra.resign@swapro-demo.co.id',
+    status: 'Resign' as const,
+    resignDate: '2026-11-13',
+    resignReason: 'Mengundurkan diri baik-baik',
+  };
+  const nonaktifEmp = {
+    ...INITIAL_EMPLOYEES[2],
+    id: 'emp-nonaktif-1',
+    employeeCode: 'OUT-998',
+    fullName: 'Budi Nonaktif',
+    status: 'Nonaktif' as const,
+  };
+
+  // 1. Validation requires resignDate for Resign status and ensures resignDate >= joinDate
+  const missingResignDate = validateEmployeeInput({
+    ...resignedEmp,
+    resignDate: '',
+  });
+  assert.equal(missingResignDate.isValid, false);
+  assert.ok(missingResignDate.errors.resignDate);
+
+  const earlyResignDate = validateEmployeeInput({
+    ...resignedEmp,
+    joinDate: '2026-11-01',
+    resignDate: '2026-10-15',
+  });
+  assert.equal(earlyResignDate.isValid, false);
+  assert.ok(earlyResignDate.errors.resignDate);
+
+  assert.equal(validateEmployeeInput(resignedEmp).isValid, true);
+
+  // 2. Option A Strict Nonaktif: Resign employee cannot log into Portal Karyawan
+  const resignLogin = authenticatePortalUser('OUT-999', '1234', [], [resignedEmp]);
+  assert.equal(resignLogin.ok, false);
+  assert.ok(resignLogin.error?.toLowerCase().includes('resign'));
+
+  // Portal stats treat Resign & Nonaktif as disabled/locked accounts
+  const portalStats = summarizePortalAccountStats(INITIAL_USERS, [
+    ...INITIAL_EMPLOYEES,
+    resignedEmp,
+    nonaktifEmp,
+  ]);
+  assert.equal(portalStats.activeEmployeeCount, INITIAL_EMPLOYEES.length);
+
+  // Filter employees supports 'Resign'
+  assert.equal(filterEmployees([...INITIAL_EMPLOYEES, resignedEmp], '', 'Semua', 'Resign').length, 1);
+
+  // 3. Prorata Final Settlement math for Nov 2026 up to 2026-11-13
+  // Nov 2026 has 21 Mon-Fri weekdays (Nov 2..6 = 5, 9..13 = 5 -> 10 days worked out of 21 weekdays)
+  const prorata = calculateResignProrataRatio('2026-11', '2026-11-13', 5520000, 22);
+  assert.equal(prorata.isInResignMonth, true);
+  assert.equal(prorata.totalDays, 21);
+  assert.equal(prorata.activeDays, 10);
+  assert.equal(prorata.isProrated, true);
+  assert.equal(prorata.proratedBaseSalary, Math.round(5520000 * (10 / 21)));
+
+  const finalSlip = computePayrollSlip({
+    period: '2026-11',
+    employee: resignedEmp,
+    entities: INITIAL_ENTITIES,
+    tariffs: INITIAL_PAYROLL_TARIFFS,
+    attendanceLogs: [],
+    leaveAbsences: [],
+    edits: {
+      pkwtCompensation: 1500000,
+    },
+  });
+  assert.equal(finalSlip.settlementType, 'Final Settlement (Resign)');
+  assert.equal(finalSlip.prorataActiveDays, 10);
+  assert.equal(finalSlip.prorataTotalDays, 21);
+  assert.equal(finalSlip.baseSalary, prorata.proratedBaseSalary);
+  assert.equal(finalSlip.fullBaseSalary, 5520000);
+  assert.equal(finalSlip.belowUmrWarning, false); // Not falsely flagged just because prorated
+
+  // Manual prorata days override works accurately
+  const editedDaysSlip = computePayrollSlip({
+    period: '2026-11',
+    employee: resignedEmp,
+    entities: INITIAL_ENTITIES,
+    tariffs: INITIAL_PAYROLL_TARIFFS,
+    attendanceLogs: [],
+    leaveAbsences: [],
+    edits: {
+      prorataDaysOverride: 15,
+    },
+  });
+  assert.equal(editedDaysSlip.prorataActiveDays, 15);
+  assert.equal(editedDaysSlip.baseSalary, Math.round(5520000 * (15 / 21)));
+
+  // 4. Payroll Headcount Summary & Routine vs Settlement eligibility
+  const samplePool = [...INITIAL_EMPLOYEES, resignedEmp, nonaktifEmp];
+  assert.equal(isEmployeeEligibleForPayrollRun(resignedEmp, '2026-11', []), true);
+  assert.equal(isEmployeeEligibleForPayrollRun(resignedEmp, '2026-12', []), false);
+  assert.equal(isEmployeeEligibleForPayrollRun(resignedEmp, '2026-11', [resignedEmp.id]), false);
+  assert.equal(isEmployeeEligibleForPayrollRun(nonaktifEmp, '2026-11', []), false);
+
+  const summaryBefore = computePayrollHeadcountSummary({
+    period: '2026-11',
+    employees: samplePool,
+    entities: INITIAL_ENTITIES,
+    tariffs: INITIAL_PAYROLL_TARIFFS,
+    periodSlips: [finalSlip],
+    settledResignEmployeeIds: [],
+  });
+  assert.equal(summaryBefore.totalScoped, 8);
+  assert.equal(summaryBefore.activeCount, 5);
+  assert.equal(summaryBefore.probationCount, 1);
+  assert.equal(summaryBefore.activeRegularCount, 6);
+  assert.equal(summaryBefore.resignTotalCount, 1);
+  assert.equal(summaryBefore.resignPendingSettlementCount, 1);
+  assert.equal(summaryBefore.resignSettledCount, 0);
+  assert.equal(summaryBefore.nonaktifCount, 1);
+  assert.equal(summaryBefore.totalPayableThisPeriod, 7);
+  assert.equal(summaryBefore.calculatedSlipCount, 1);
+  assert.equal(summaryBefore.uncalculatedEligibleCount, 6);
+
+  // 5. Anti-Double Settlement in Excel Import once resignee is settled
+  const wb = XLSX.utils.book_new();
+  const sheet = XLSX.utils.json_to_sheet([
+    {
+      NIK_Karyawan: resignedEmp.employeeCode,
+      Nama_Karyawan: resignedEmp.fullName,
+      Base_Gaji: prorata.proratedBaseSalary,
+    },
+    {
+      NIK_Karyawan: nonaktifEmp.employeeCode,
+      Nama_Karyawan: nonaktifEmp.fullName,
+      Base_Gaji: 5000000,
+    },
+  ]);
+  XLSX.utils.book_append_sheet(wb, sheet, 'Sheet1');
+  const xlsxBytes = new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer);
+
+  const previewBeforeSettle = parseAndValidatePayrollExcel({
+    fileBytes: xlsxBytes,
+    fileName: 'settlement.xlsx',
+    period: '2026-11',
+    mode: 'variable-merge',
+    employees: samplePool,
+    entities: INITIAL_ENTITIES,
+    tariffs: INITIAL_PAYROLL_TARIFFS,
+    attendanceLogs: [],
+    leaveAbsences: [],
+    settledResignEmployeeIds: [],
+  });
+  assert.equal(previewBeforeSettle.warningCount, 1); // Resign row accepted with warning info
+  assert.equal(previewBeforeSettle.errorCount, 1); // Nonaktif row blocked
+
+  const previewAfterSettle = parseAndValidatePayrollExcel({
+    fileBytes: xlsxBytes,
+    fileName: 'settlement.xlsx',
+    period: '2026-11',
+    mode: 'variable-merge',
+    employees: samplePool,
+    entities: INITIAL_ENTITIES,
+    tariffs: INITIAL_PAYROLL_TARIFFS,
+    attendanceLogs: [],
+    leaveAbsences: [],
+    settledResignEmployeeIds: [resignedEmp.id],
+  });
+  assert.equal(previewAfterSettle.errorCount, 2); // Both already-settled Resign & Nonaktif blocked!
+
+  // 6. PDF slip prints Final Settlement header cleanly
+  const pubDir = path.resolve(process.cwd(), 'public');
+  const readAsset = (rel: string) => new Uint8Array(fs.readFileSync(path.join(pubDir, rel)));
+  const settlePdf = await generateSlipGajiPdfBytes([finalSlip], INITIAL_SETTINGS, {
+    regularFont: readAsset('fonts/carlito-latin-400-normal.ttf'),
+    boldFont: readAsset('fonts/carlito-latin-700-normal.ttf'),
+    logoPng: readAsset('assets/pkwt/swapro-logo.png'),
+  });
+  const loadedSettlePdf = await PDFDocument.load(settlePdf);
+  assert.equal(loadedSettlePdf.getPageCount(), 1);
+});
+
+test('Dynamic active vs resign/nonaktif employee headcount sync adjusts entity headcount automatically and summarizes statuses', () => {
+  assert.equal(isEmployeeActiveForHeadcount('Aktif'), true);
+  assert.equal(isEmployeeActiveForHeadcount('Probation'), true);
+  assert.equal(isEmployeeActiveForHeadcount('Resign'), false);
+  assert.equal(isEmployeeActiveForHeadcount('Nonaktif'), false);
+
+  // 500-employee baseline -> 100 employees resign -> total active headcount drops to 400
+  let entities = [
+    {
+      ...INITIAL_ENTITIES[0],
+      name: 'PT Adira Finance',
+      employeeCount: 500,
+    },
+    {
+      ...INITIAL_ENTITIES[1],
+      name: 'PT BAF Indonesia',
+      employeeCount: 120,
+    },
+  ];
+
+  for (let i = 0; i < 100; i += 1) {
+    entities = applyEmployeeHeadcountDelta(
+      entities,
+      { entityName: 'PT Adira Finance', status: 'Aktif' },
+      { entityName: 'PT Adira Finance', status: 'Resign' }
+    );
+  }
+  assert.equal(entities[0].employeeCount, 400);
+  assert.equal(entities[1].employeeCount, 120);
+
+  // Probation -> Nonaktif also decrements by 1
+  entities = applyEmployeeHeadcountDelta(
+    entities,
+    { entityName: 'PT Adira Finance', status: 'Probation' },
+    { entityName: 'PT Adira Finance', status: 'Nonaktif' }
+  );
+  assert.equal(entities[0].employeeCount, 399);
+
+  // Reactivating Nonaktif -> Aktif increments back by 1
+  entities = applyEmployeeHeadcountDelta(
+    entities,
+    { entityName: 'PT Adira Finance', status: 'Nonaktif' },
+    { entityName: 'PT Adira Finance', status: 'Aktif' }
+  );
+  assert.equal(entities[0].employeeCount, 400);
+
+  // Moving active employee from Adira to BAF adjusts -1 and +1
+  entities = applyEmployeeHeadcountDelta(
+    entities,
+    { entityName: 'PT Adira Finance', status: 'Aktif' },
+    { entityName: 'PT BAF Indonesia', status: 'Aktif' }
+  );
+  assert.equal(entities[0].employeeCount, 399);
+  assert.equal(entities[1].employeeCount, 121);
+
+  // Deleting an active employee decrements, deleting an already-resigned employee leaves count untouched
+  entities = applyEmployeeHeadcountDelta(
+    entities,
+    { entityName: 'PT BAF Indonesia', status: 'Aktif' },
+    null
+  );
+  assert.equal(entities[1].employeeCount, 120);
+  entities = applyEmployeeHeadcountDelta(
+    entities,
+    { entityName: 'PT BAF Indonesia', status: 'Resign' },
+    null
+  );
+  assert.equal(entities[1].employeeCount, 120);
+
+  // Clamp at >= 0 when entity starts at 0
+  const zeroEntity = [{ ...INITIAL_ENTITIES[0], name: 'PT Kosong', employeeCount: 0 }];
+  const afterClamp = applyEmployeeHeadcountDelta(
+    zeroEntity,
+    { entityName: 'PT Kosong', status: 'Aktif' },
+    { entityName: 'PT Kosong', status: 'Resign' }
+  );
+  assert.equal(afterClamp[0].employeeCount, 0);
+
+  // Status counts & Nonaktif filtering
+  const samplePool = [
+    ...INITIAL_EMPLOYEES,
+    { ...INITIAL_EMPLOYEES[0], id: 'emp-r1', status: 'Resign' as const },
+    { ...INITIAL_EMPLOYEES[1], id: 'emp-n1', status: 'Nonaktif' as const },
+  ];
+  const counts = summarizeEmployeeStatusCounts(samplePool);
+  assert.equal(counts.totalTerdata, 8);
+  assert.equal(counts.activeCount, 5);
+  assert.equal(counts.probationCount, 1);
+  assert.equal(counts.activeWorkingCount, 6);
+  assert.equal(counts.resignCount, 1);
+  assert.equal(counts.nonaktifCount, 1);
+  assert.equal(counts.inactiveOrResignedCount, 2);
+
+  assert.equal(filterEmployees(samplePool, '', 'Semua', 'Nonaktif').length, 1);
+  assert.equal(filterEmployees(samplePool, '', 'Semua', 'Resign').length, 1);
+});
+
+test('Internal client/branch handling & Eksternal placement helpers normalize, summarize, filter, and prevent headcount double counting', () => {
+  // 1. Internal employee configured to handle multiple clients & specific/all branches
+  const internalNormalized = normalizeEmployeePlacementInput(
+    {
+      ...INITIAL_EMPLOYEES[0],
+      employmentType: 'Penempatan Klien', // Should self-correct to Internal based on entityName
+      entityName: 'Kantor Pusat Operasional',
+      position: 'PIC Operasional Klien',
+      handledClients: [
+        {
+          entityName: 'Adira Finance — Penempatan Regional',
+          branches: ['Adira Tebet', 'adira tebet', 'Adira Ketapang'],
+        },
+        {
+          entityName: 'BAF — Layanan Operasional Cabang',
+          branches: [],
+        },
+      ],
+      additionalBranches: ['ShouldBeCleared'],
+    },
+    INITIAL_ENTITIES
+  );
+
+  assert.equal(internalNormalized.employmentType, 'Internal');
+  assert.equal(internalNormalized.handledClients?.length, 2);
+  assert.deepEqual(internalNormalized.handledClients?.[0].branches, [
+    'Adira Tebet',
+    'Adira Ketapang',
+  ]);
+  assert.deepEqual(internalNormalized.handledClients?.[1].branches, ['Semua Cabang']);
+  assert.deepEqual(internalNormalized.additionalBranches, []);
+
+  const internalSummary = formatEmployeeHandledClientsSummary({
+    ...internalNormalized,
+    id: 'test-int-1',
+  } as unknown as typeof INITIAL_EMPLOYEES[0]);
+  assert.deepEqual(internalSummary, [
+    'Adira Finance — Penempatan Regional: Adira Tebet, Adira Ketapang',
+    'BAF — Layanan Operasional Cabang: Semua Cabang',
+  ]);
+
+  // Headcount check: creating Internal employee who handles 2 clients only increments Internal unit (+1), NOT handled clients
+  const baseEntities = INITIAL_ENTITIES.map((e) => ({ ...e }));
+  const afterInternalAdd = applyEmployeeHeadcountDelta(baseEntities, null, {
+    entityName: internalNormalized.entityName,
+    status: 'Aktif',
+  });
+  assert.equal(
+    afterInternalAdd.find((e) => e.name === 'Kantor Pusat Operasional')?.employeeCount,
+    69
+  );
+  assert.equal(
+    afterInternalAdd.find((e) => e.name === 'Adira Finance — Penempatan Regional')?.employeeCount,
+    142
+  );
+  assert.equal(
+    afterInternalAdd.find((e) => e.name === 'BAF — Layanan Operasional Cabang')?.employeeCount,
+    78
+  );
+
+  // 2. Eksternal (Penempatan Klien) employee with client, position, primary branch, and optional additional branch
+  const externalNormalized = normalizeEmployeePlacementInput(
+    {
+      ...INITIAL_EMPLOYEES[1],
+      employmentType: 'Internal', // Should self-correct to Penempatan Klien based on entityName
+      entityName: 'Adira Finance — Penempatan Regional',
+      position: 'Field Collection Officer',
+      placementId: 'plc-adr-1',
+      placementName: 'Adira Tebet',
+      additionalBranches: ['Adira Tebet', 'Adira Ketapang', 'adira ketapang'],
+      handledClients: [
+        { entityName: 'BAF — Layanan Operasional Cabang', branches: ['Semua Cabang'] },
+      ],
+    },
+    INITIAL_ENTITIES
+  );
+
+  assert.equal(externalNormalized.employmentType, 'Penempatan Klien');
+  assert.equal(externalNormalized.placementName, 'Adira Tebet');
+  assert.equal(externalNormalized.placementArea, 'Jabodetabek');
+  assert.deepEqual(externalNormalized.additionalBranches, ['Adira Ketapang']);
+  assert.deepEqual(externalNormalized.handledClients, []);
+
+  const externalSummary = formatEmployeeHandledClientsSummary({
+    ...externalNormalized,
+    id: 'test-ext-1',
+  } as unknown as typeof INITIAL_EMPLOYEES[0]);
+  assert.deepEqual(externalSummary, [
+    'Adira Finance — Penempatan Regional (Adira Tebet, Adira Ketapang)',
+  ]);
+
+  // Headcount check when mutating Internal -> Eksternal (-1 Internal, +1 Client)
+  const afterTransfer = applyEmployeeHeadcountDelta(
+    afterInternalAdd,
+    { entityName: internalNormalized.entityName, status: 'Aktif' },
+    { entityName: externalNormalized.entityName, status: 'Aktif' }
+  );
+  assert.equal(
+    afterTransfer.find((e) => e.name === 'Kantor Pusat Operasional')?.employeeCount,
+    68
+  );
+  assert.equal(
+    afterTransfer.find((e) => e.name === 'Adira Finance — Penempatan Regional')?.employeeCount,
+    143
+  );
+
+  // Search filter matches Internal employee by handled client branch name
+  const empPool = [
+    { ...internalNormalized, id: 'emp-int-pic' },
+    { ...externalNormalized, id: 'emp-ext-fc' },
+  ];
+  const matchedByBranch = filterEmployees(empPool, 'Semua Cabang', 'Internal');
+  assert.equal(matchedByBranch.length, 1);
+  assert.equal(matchedByBranch[0].id, 'emp-int-pic');
+
+  const matchedExternalExtraBranch = filterEmployees(empPool, 'Adira Ketapang', 'Penempatan Klien');
+  assert.equal(matchedExternalExtraBranch.length, 1);
+  assert.equal(matchedExternalExtraBranch[0].id, 'emp-ext-fc');
+});
+
+test('Internal & Eksternal Employee Activity Reports: scope options, validation, Admin scope filtering, summary & CSV export without approval', () => {
+  // 1. Scope options for Internal employee (Raka Pratama) include own internal unit + handled clients/branches
+  const internalScopes = resolveEmployeeActivityScopeOptions(INITIAL_EMPLOYEES[0]);
+  assert.equal(internalScopes.length, 2);
+  assert.equal(internalScopes[0].entityName, 'Kantor Pusat Operasional');
+  assert.equal(internalScopes[1].entityName, 'Adira Finance — Penempatan Regional');
+  assert.deepEqual(internalScopes[1].branches, ['Adira Tebet', 'Adira Ketapang']);
+
+  // 2. Scope options for Eksternal employee with additional branch include primary + extra branches without duplicates
+  const externalScopes = resolveEmployeeActivityScopeOptions({
+    ...INITIAL_EMPLOYEES[5],
+    additionalBranches: ['Adira Tebet', 'Adira Ketapang'],
+  });
+  assert.equal(externalScopes.length, 1);
+  assert.equal(externalScopes[0].entityName, 'Adira Finance — Penempatan Regional');
+  assert.deepEqual(externalScopes[0].branches, ['Adira Tebet', 'Adira Ketapang']);
+
+  // 3. Input validation catches missing/short fields cleanly
+  const invalidAct = validateActivityReportInput({
+    activityDate: 'invalid',
+    targetEntityName: '',
+    targetBranchName: '',
+    title: 'ab',
+    description: 'ok',
+    progressStatus: 'Berjalan',
+  });
+  assert.equal(invalidAct.isValid, false);
+  assert.ok(invalidAct.errors.activityDate);
+  assert.ok(invalidAct.errors.targetEntityName);
+  assert.ok(invalidAct.errors.targetBranchName);
+  assert.ok(invalidAct.errors.title);
+  assert.ok(invalidAct.errors.description);
+
+  const validAct = validateActivityReportInput({
+    activityDate: '2026-11-17',
+    targetEntityName: 'Adira Finance — Penempatan Regional',
+    targetBranchName: 'Adira Ketapang',
+    title: 'Audit jadwal shift staf lapangan',
+    description: 'Menyelaraskan jadwal shift pagi & sore bersama supervisor cabang.',
+    progressStatus: 'Selesai',
+  });
+  assert.equal(validAct.isValid, true);
+
+  // 4. Admin scoped filtering captures both Eksternal employees in client scope AND Internal employees targeting that client
+  const adiraAdminScoped = filterActivityReportsByScopes(
+    INITIAL_ACTIVITY_REPORTS,
+    ['Adira Finance — Penempatan Regional'],
+    'Semua Cakupan'
+  );
+  assert.equal(adiraAdminScoped.length, 2);
+  assert.ok(adiraAdminScoped.some((r) => r.employeeCode === 'EMP-1024' && r.employmentType === 'Internal'));
+  assert.ok(adiraAdminScoped.some((r) => r.employeeCode === 'NEW-209' && r.employmentType === 'Penempatan Klien'));
+
+  // 5. Filter & Summarize & CSV Export
+  const internalOnly = filterActivityReports(INITIAL_ACTIVITY_REPORTS, '', 'Internal', 'Semua');
+  assert.equal(internalOnly.length, 2);
+  const completedOnly = filterActivityReports(INITIAL_ACTIVITY_REPORTS, 'Sudirman', 'Penempatan Klien', 'Selesai');
+  assert.equal(completedOnly.length, 1);
+  assert.equal(completedOnly[0].employeeCode, 'OUT-318');
+
+  const stats = summarizeActivityReports(INITIAL_ACTIVITY_REPORTS);
+  assert.equal(stats.total, 4);
+  assert.equal(stats.completed, 3);
+  assert.equal(stats.ongoing, 1);
+  assert.equal(stats.blocked, 0);
+  assert.equal(stats.internalCount, 2);
+  assert.equal(stats.clientCount, 2);
+
+  const csv = buildActivityReportsCsv(INITIAL_ACTIVITY_REPORTS);
+  assert.ok(csv.includes('Judul Kegiatan'));
+  assert.ok(csv.includes('EMP-1024'));
+  assert.ok(csv.includes('NEW-209'));
+  assert.ok(!csv.includes('Menunggu ACC'));
+});
+
+test('Live Timestamp Camera & GPS for Activity Reports: stamp formatting, overlay lines, mandatory camera validation, and CSV GPS columns', () => {
+  const sampleDate = new Date(2026, 10, 17, 10, 15, 32); // 17 Nov 2026 10:15:32
+  const stamp = formatTimestampCameraLabel(sampleDate);
+  assert.equal(stamp.display, '17 Nov 2026 · 10:15:32');
+  assert.ok(stamp.iso.startsWith('2026-11-17'));
+
+  assert.equal(
+    formatGpsCoordinateText(-6.2297, 106.8573, 14.4, 'locked'),
+    '-6.229700, 106.857300 (±14 m)'
+  );
+  assert.equal(formatGpsCoordinateText(undefined, undefined, undefined, 'denied'), 'Izin GPS ditolak browser');
+  assert.equal(
+    formatGpsCoordinateText(undefined, undefined, undefined, 'unavailable'),
+    'Koordinat GPS tidak tersedia'
+  );
+
+  const lines = buildActivityStampOverlayLines({
+    capturedAtDisplay: stamp.display,
+    employeeName: 'Raka Pratama',
+    employeeCode: 'EMP-1024',
+    employmentType: 'Internal',
+    targetEntityName: 'Adira Finance — Penempatan Regional',
+    targetBranchName: 'Adira Tebet',
+    gpsLat: -6.2297,
+    gpsLng: 106.8573,
+    gpsAccuracyMeters: 12,
+    gpsStatus: 'locked',
+  });
+  assert.equal(lines.length, 4);
+  assert.equal(lines[0], 'LIVE TIMESTAMP: 17 Nov 2026 · 10:15:32');
+  assert.equal(lines[1], 'GPS: -6.229700, 106.857300 (±12 m)');
+  assert.ok(lines[2].includes('EMP-1024'));
+  assert.ok(lines[3].includes('Adira Tebet'));
+
+  // Mandatory camera photo option rejects reports without live camera photo
+  const missingPhotoCheck = validateActivityReportInput(
+    {
+      activityDate: '2026-11-17',
+      targetEntityName: 'Adira Finance — Penempatan Regional',
+      targetBranchName: 'Adira Tebet',
+      title: 'Kunjungan operasional cabang',
+      description: 'Pemeriksaan kehadiran dan koordinasi supervisor lapangan.',
+      progressStatus: 'Selesai',
+    },
+    { requireCameraPhoto: true }
+  );
+  assert.equal(missingPhotoCheck.isValid, false);
+  assert.ok(missingPhotoCheck.errors.cameraPhoto);
+
+  const withPhotoCheck = validateActivityReportInput(
+    {
+      activityDate: '2026-11-17',
+      targetEntityName: 'Adira Finance — Penempatan Regional',
+      targetBranchName: 'Adira Tebet',
+      title: 'Kunjungan operasional cabang',
+      description: 'Pemeriksaan kehadiran dan koordinasi supervisor lapangan.',
+      progressStatus: 'Selesai',
+      attachmentFileName: 'cam-emp-1024-20261117-101532.jpg',
+      attachmentDataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+      photoCapturedAt: stamp.display,
+      photoGpsLat: -6.2297,
+      photoGpsLng: 106.8573,
+      photoGpsAccuracyMeters: 12,
+      photoGpsStatus: 'locked',
+    },
+    { requireCameraPhoto: true }
+  );
+  assert.equal(withPhotoCheck.isValid, true);
+
+  const csvWithGps = buildActivityReportsCsv([
+    {
+      ...INITIAL_ACTIVITY_REPORTS[0],
+      photoCapturedAt: '17 Nov 2026 · 10:15:32',
+      photoGpsLat: -6.2297,
+      photoGpsLng: 106.8573,
+      photoGpsAccuracyMeters: 12,
+      photoGpsStatus: 'locked',
+    },
+  ]);
+  assert.ok(csvWithGps.includes('Waktu Foto Kamera'));
+  assert.ok(csvWithGps.includes('Koordinat GPS'));
+  assert.ok(csvWithGps.includes('17 Nov 2026 · 10:15:32'));
+  assert.ok(csvWithGps.includes('-6.229700, 106.857300'));
+});
+
+test('SWAPRO FORM HCREV-17102023 leave/permission validation and 1:1 PDF overlay generation', async () => {
+  // 1. Datang Terlambat & Pulang Lebih Awal require timeDetail and do not deduct annual quota
+  const missingLateTime = validateLeaveRequestSubmission({
+    type: 'Datang Terlambat',
+    dateRange: '20 Nov 2026',
+    daysCount: 0,
+    reason: 'Ban kendaraan bocor di perjalanan',
+    remainingLeaveQuota: 0,
+  });
+  assert.equal(missingLateTime.ok, false);
+
+  const validLate = validateLeaveRequestSubmission({
+    type: 'Datang Terlambat',
+    dateRange: '20 Nov 2026',
+    daysCount: 0,
+    reason: 'Ban kendaraan bocor di perjalanan',
+    timeDetail: '09:30',
+    remainingLeaveQuota: 0,
+  });
+  assert.equal(validLate.ok, true);
+
+  // 2. Meninggalkan Pekerjaan requires both leaveTimeStart and leaveTimeEnd
+  const missingLeaveEnd = validateLeaveRequestSubmission({
+    type: 'Meninggalkan Pekerjaan',
+    dateRange: '20 Nov 2026',
+    daysCount: 0,
+    reason: 'Kontrol klinik gigi',
+    leaveTimeStart: '13:00',
+    remainingLeaveQuota: 0,
+  });
+  assert.equal(missingLeaveEnd.ok, false);
+
+  const validLeaveOffice = validateLeaveRequestSubmission({
+    type: 'Meninggalkan Pekerjaan',
+    dateRange: '20 Nov 2026',
+    daysCount: 0,
+    reason: 'Kontrol klinik gigi',
+    leaveTimeStart: '13:00',
+    leaveTimeEnd: '15:00',
+    remainingLeaveQuota: 0,
+  });
+  assert.equal(validLeaveOffice.ok, true);
+
+  // 3. Partial-day permissions never reduce remaining annual leave quota even when approved
+  const quotaAfterPartial = calculateEmployeeLeaveQuotaSummary(
+    'EMP-1024',
+    [
+      {
+        id: 'lv-partial-1',
+        employeeCode: 'EMP-1024',
+        employeeName: 'Raka Pratama',
+        employmentType: 'Internal',
+        entityName: 'Kantor Pusat Operasional',
+        type: 'Meninggalkan Pekerjaan',
+        dateRange: '20 Nov 2026',
+        daysCount: 0,
+        reason: 'Kontrol dokter gigi',
+        status: 'Disetujui',
+        leaveTimeStart: '13:00',
+        leaveTimeEnd: '15:00',
+      },
+    ],
+    12
+  );
+  assert.equal(quotaAfterPartial.approvedLeaveDays, 0);
+  assert.equal(quotaAfterPartial.remainingLeaveQuota, 12);
+
+  // 4. Generate real 1:1 filled SWAPRO PDFs over the official attached template
+  const templatePath = path.resolve(
+    process.cwd(),
+    'public/assets/aistudio/Form_Cuti_SWAPRO_NEW_e00fd5e1.pdf'
+  );
+  assert.equal(fs.existsSync(templatePath), true);
+  const templateBytes = new Uint8Array(fs.readFileSync(templatePath));
+
+  const sampleAnnual = INITIAL_LEAVE_ABSENCES.find((l) => l.id === 'lv-2');
+  assert.ok(sampleAnnual);
+  const outAnnual = await generateSwaproLeavePdfBytes({
+    record: {
+      ...sampleAnnual,
+      status: 'Disetujui',
+      reviewedBy: 'Fathurrahman (MGR-001)',
+      reviewedAt: '12 Nov 2026 · 14:20',
+    },
+    templatePdfBytes: templateBytes,
+  });
+  const docAnnual = await PDFDocument.load(outAnnual);
+  assert.equal(docAnnual.getPageCount(), 1);
+  assert.ok(outAnnual.byteLength > templateBytes.byteLength * 0.5);
+
+  const outPartial = await generateSwaproLeavePdfBytes({
+    record: {
+      id: 'lv-partial-pdf',
+      employeeCode: 'EMP-1024',
+      employeeName: 'Raka Pratama',
+      employmentType: 'Internal',
+      entityName: 'Kantor Pusat Operasional',
+      type: 'Meninggalkan Pekerjaan',
+      dateRange: '20 Nov 2026',
+      daysCount: 0,
+      reason: 'Urusan keluarga mendesak',
+      status: 'Menunggu',
+      startDate: '2026-11-20',
+      endDate: '2026-11-20',
+      returnToWorkDate: '2026-11-20',
+      leaveTimeStart: '13:00',
+      leaveTimeEnd: '15:00',
+      contactPhone: '0812-9010-2400',
+      submittedCity: 'Jakarta',
+    },
+    templatePdfBytes: templateBytes,
+  });
+  const docPartial = await PDFDocument.load(outPartial);
+  assert.equal(docPartial.getPageCount(), 1);
+
+  const filename = buildSwaproLeavePdfFilename(sampleAnnual);
+  assert.equal(filename, 'Form_Cuti_SWAPRO_OUT-318_Nadia_Kusuma_Cuti_Tahunan.pdf');
+});
+
+test('metadata.json declares camera and geolocation frame permissions for Laporan Kegiatan Live Camera & GPS', () => {
+  const metadataPath = path.resolve(process.cwd(), 'metadata.json');
+  const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as {
+    requestFramePermissions?: string[];
+  };
+  assert.ok(Array.isArray(metadata.requestFramePermissions));
+  assert.ok(metadata.requestFramePermissions.includes('camera'));
+  assert.ok(metadata.requestFramePermissions.includes('geolocation'));
+});
+
+test('Reverse geocoded address formats Indonesian locations, embeds ALAMAT line on watermark, and exports Alamat GPS in CSV', () => {
+  const formatted = formatReverseGeocodeAddress({
+    road: 'Jalan Prof. Dr. Soepomo',
+    house_number: '45',
+    village: 'Tebet Barat',
+    city_district: 'Tebet',
+    city: 'Jakarta Selatan',
+    state: 'Daerah Khusus Ibukota Jakarta',
+  });
+  assert.equal(
+    formatted,
+    'Jalan Prof. Dr. Soepomo No. 45, Tebet Barat, Tebet, Jakarta Selatan, Daerah Khusus Ibukota Jakarta'
+  );
+
+  // Deduplicates identical suburb & district names
+  const deduped = formatReverseGeocodeAddress({
+    road: 'Jl. Jenderal Sudirman',
+    suburb: 'Tebet',
+    city_district: 'Tebet',
+    city: 'Jakarta Selatan',
+  });
+  assert.equal(deduped, 'Jl. Jenderal Sudirman, Tebet, Jakarta Selatan');
+
+  // Falls back cleanly to display_name when structured parts are absent
+  const fallback = formatReverseGeocodeAddress(
+    null,
+    'Menara Palma, Jl. HR Rasuna Said, Kuningan Timur, Setiabudi, Jakarta Selatan, 12950, Indonesia'
+  );
+  assert.equal(
+    fallback,
+    'Menara Palma, Jl. HR Rasuna Said, Kuningan Timur, Setiabudi, Jakarta Selatan'
+  );
+
+  // Overlay lines include ALAMAT right below GPS when gpsAddress is provided
+  const overlayWithAddress = buildActivityStampOverlayLines({
+    capturedAtDisplay: '21 Nov 2026 · 09:15:00',
+    employeeName: 'Raka Pratama',
+    employeeCode: 'EMP-1024',
+    employmentType: 'Internal',
+    targetEntityName: 'Adira Finance — Penempatan Regional',
+    targetBranchName: 'Adira Tebet',
+    gpsLat: -6.229728,
+    gpsLng: 106.857342,
+    gpsAccuracyMeters: 15,
+    gpsAddress: 'Jl. Prof. Dr. Soepomo, Tebet Barat, Tebet, Jakarta Selatan',
+    gpsStatus: 'locked',
+  });
+  assert.equal(overlayWithAddress.length, 5);
+  assert.equal(overlayWithAddress[1], 'GPS: -6.229728, 106.857342 (±15 m)');
+  assert.equal(
+    overlayWithAddress[2],
+    'ALAMAT: Jl. Prof. Dr. Soepomo, Tebet Barat, Tebet, Jakarta Selatan'
+  );
+
+  // CSV export includes Alamat GPS column
+  const csvWithAddress = buildActivityReportsCsv([
+    {
+      ...INITIAL_ACTIVITY_REPORTS[0],
+      photoCapturedAt: '21 Nov 2026 · 09:15:00',
+      photoGpsLat: -6.229728,
+      photoGpsLng: 106.857342,
+      photoGpsAccuracyMeters: 15,
+      photoGpsAddress: 'Jl. Prof. Dr. Soepomo, Tebet Barat, Jakarta Selatan',
+      photoGpsStatus: 'locked',
+    },
+  ]);
+  assert.ok(csvWithAddress.includes('Alamat GPS'));
+  assert.ok(csvWithAddress.includes('Jl. Prof. Dr. Soepomo, Tebet Barat, Jakarta Selatan'));
+});
+
 
 

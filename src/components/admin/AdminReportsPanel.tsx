@@ -2,14 +2,17 @@ import React from 'react';
 import {
   AuditLogRecord,
   DOCUMENT_CHECKLIST_ITEMS,
+  EmployeeActivityReportRecord,
   EmployeeRecord,
   OperationalSnapshot,
   countUploadedDocuments,
 } from '../../data/masterAdminData';
+import { ActivityReportsBoard } from '../shared/ActivityReportsBoard';
 
 interface AdminReportsPanelProps {
   snapshots: OperationalSnapshot[];
   employees: EmployeeRecord[];
+  activityReports?: EmployeeActivityReportRecord[];
   auditLogs: AuditLogRecord[];
   assignedScopes: string[];
   adminName: string;
@@ -18,6 +21,7 @@ interface AdminReportsPanelProps {
 export const AdminReportsPanel: React.FC<AdminReportsPanelProps> = ({
   snapshots,
   employees,
+  activityReports = [],
   auditLogs,
   assignedScopes,
   adminName,
@@ -34,6 +38,14 @@ export const AdminReportsPanel: React.FC<AdminReportsPanelProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Scoped Employee Activity Reports (Internal & Eksternal) */}
+      <ActivityReportsBoard
+        reports={activityReports}
+        title="Laporan Kegiatan Karyawan (Cakupan Anda)"
+        subtitle="Update aktivitas kerja harian dari karyawan Internal maupun Eksternal pada unit atau client dalam cakupan Anda."
+        csvFileNamePrefix="laporan-kegiatan-admin-cakupan"
+      />
+
       {/* Operational Snapshot Summary Scoped to Admin's Units/Clients */}
       <section className="bg-white border border-[#E2E8F0] rounded-[6px] overflow-hidden">
         <div className="px-6 py-4 border-b border-[#E2E8F0]">
